@@ -59,6 +59,67 @@ div.stButton > button[kind="primary"] {background:#ff7a2c; color:#141414; font-w
 </style>""", unsafe_allow_html=True)
 
 
+def build_forecast(seed, track, laps):
+    """A fictional forecast issued at race start; probabilities are not outcomes."""
+    rng = random.Random(f"forecast-{seed}")
+    climate = TRACKS[track][3]
+    # A slowly evolving weather front creates meaningful multi-lap risk.
+    pressure = rng.uniform(-.10, .17)
+    result = []
+    for lap in range(1, laps + 1):
+        pressure = max(-.20, min(.69, .78 * pressure + rng.uniform(-.13, .16)))
+        # Track baseline adds dry/wet climate variety. Clamp for readability.
+        probability = max(.02, min(.88, climate * 1.6 + pressure))
+        result.append(round(probability, 3))
+    return result
+
+
+def rain_outlook(g):
+    """Return upcoming lap-specific risk of precipitation, not a certainty."""
+    return [
+        (i + 1, g["forecast"][i])
+        for i in range(g["lap"], min(g["total"], g["lap"] + 4))
+    ]
+
+
+def weather_strategy(g):
+    """A separate weather briefing; never promises a future outcome."""
+    upcoming = rain_outlook(g)
+    if not upcoming:
+        return "Race complete", "No upcoming forecast laps."
+    risk = upcoming[0][1]
+    near = max((p for _, p in upcoming[:3]), default=risk)
+    driver = you(g)
+    if g["weather"] == "Wet":
+        return "Wet track", "Wet tires are favored now. Monitor the forecast for drying before changing back."
+    if g["weather"] == "Damp":
+        if risk >= .45:
+            return "Rain may intensify", "Intermediates are a reasonable choice; wet tires could pay off if rain builds, but the forecast is uncertain."
+        return "Damp track", "Intermediates suit current conditions. Check the next-lap rain chance before switching to slicks."
+    if risk >= .65:
+        return "High rain risk", "Rain is likely next lap, but the track is still dry. Consider whether a stop now is worth its time cost."
+    if near >= .48:
+        return "Possible weather change", "Rain risk increases within 3 laps. A short dry-tire stint may be better than committing to a long run."
+    if driver["tire"] not in DRY:
+        return "Track currently dry", "Dry tires are faster now. Don't keep wet-weather tires solely because rain is possible."
+    return "Mostly dry outlook", "Slick tires are favored now, but keep watching the updated forecast."
+
+
+def forecast_display(g):
+    rows = rain_outlook(g)
+    if not rows:
+        st.caption("Race complete — no future forecast laps.")
+        return
+    st.markdown("**🌧️ Weather radar · next laps**")
+    st.caption("Forecast probabilities are simulated. They indicate a chance of rain, not a guaranteed change in track conditions.")
+    for lap, prob in rows:
+        left, right = st.columns([1, 3], vertical_alignment="center")
+        left.markdown(f"**L{lap}** · {prob:.0%}")
+        right.progress(prob)
+    heading, advice = weather_strategy(g)
+    st.markdown(f"**{heading}:** {advice}")
+
+
 def new_game(track, laps, player_name):
     seed = random.SystemRandom().randrange(1_000_000_000)
     rng = random.Random(seed)
@@ -69,6 +130,7 @@ def new_game(track, laps, player_name):
                             elapsed=0., tire="Medium", age=0.,
                             used=["Medium"], stops=0, history=[]))
     return dict(track=track, total=laps, player=player_name, seed=seed,
+                forecast=build_forecast(seed, track, laps), weather_history=[],
                 stage="qualifying", lap=0, weather="Dry", was_wet=False,
                 safety=False, drivers=drivers, events=[], entries=[],
                 snapshots=[], qual_results=[], pit_challenge=None, finished=False, qual_practice=None, qual_score=None)
@@ -158,13 +220,21 @@ def pit_quality(targets, answers, elapsed_seconds):
 def sim_lap(g, pit_tire, mode, stationary=None):
     lap = g["lap"] + 1
     rng = random.Random(f"race-{g['seed']}-{lap}")
-    base, pit_loss, wear, rain_chance, _ = TRACKS[g["track"]]
+    base, pit_loss, wear, _, _ = TRACKS[g["track"]]
     w = g["weather"]
-    r = rng.random()
-    if w == "Dry" and r < rain_chance * .55: g["weather"] = "Damp"
-    elif w == "Damp" and r < .28: g["weather"] = "Wet"
-    elif w == "Damp" and r > .72: g["weather"] = "Dry"
-    elif w == "Wet" and r > .74: g["weather"] = "Damp"
+    rain_chance = g["forecast"][lap - 1]
+    # Forecast sets a probability; the outcome is sampled independently.
+    is_raining = rng.random() < rain_chance
+    if w == "Dry" and is_raining:
+        g["weather"] = "Damp"
+    elif w == "Damp":
+        if is_raining and rng.random() < .65:
+            g["weather"] = "Wet"
+        elif not is_raining and rng.random() < .50:
+            g["weather"] = "Dry"
+    elif w == "Wet" and not is_raining and rng.random() < .65:
+        g["weather"] = "Damp"
+    g["weather_history"].append({"Lap": lap, "Rain chance": round(100 * rain_chance), "Rained": "Yes" if is_raining else "No", "Track": g["weather"]})
     g["was_wet"] = g["was_wet"] or (g["weather"] != "Dry")
     g["safety"] = rng.random() < .09
     events = []
@@ -212,7 +282,7 @@ def sim_lap(g, pit_tire, mode, stationary=None):
     g["snapshots"].append([dict(Lap=lap, Pos=i, Driver=d["name"], Team=d["team"], Gap=round(d["elapsed"]-leader, 2), Tire=d["tire"], Stops=d["stops"], Time=d["history"][-1]["Time"]) for i, d in enumerate(ranked, 1)])
     g["entries"].append(dict(Lap=lap, Time=driver["history"][-1]["Time"], Pos=position,
                              Gap=round(driver["elapsed"]-leader, 2), Tire=driver["tire"],
-                             Drive=mode, Pit=pit_tire, PitLoss=round(actual_pit, 2), Weather=g["weather"], SafetyCar=g["safety"]))
+                             Drive=mode, Pit=pit_tire, PitLoss=round(actual_pit, 2), Weather=g["weather"], RainChance=f"{rain_chance:.0%}", SafetyCar=g["safety"]))
     g["lap"], g["events"] = lap, events
     g["pit_challenge"] = None
     if lap >= g["total"]:
@@ -416,6 +486,7 @@ if st.session_state.pit_wall_v3 is None:
     track = a.selectbox("Circuit", list(TRACKS))
     laps = b.slider("Race laps", 8, 30, 14)
     driver = c.selectbox("Your driver", [d[0] for d in GRID], format_func=lambda n: f"{n} · {TEAM[n]}")
+    st.info("🌦️ This circuit's simulated rain climate: " + f"{TRACKS[track][3]:.0%} baseline. During the race, a changing probabilistic weather forecast will influence tire strategy.")
     st.markdown("**Estimated useful laps per tire at this circuit**")
     st.dataframe(pd.DataFrame([{"Tire": TIRE_SYMBOL[t] + " " + t, "Expected useful laps": expected_life({"track": track}, t)} for t in TIRE_LIFE]), hide_index=True, use_container_width=True)
     if st.button("🏁 BEGIN QUALIFYING", type="primary", use_container_width=True):
@@ -509,7 +580,12 @@ with left:
 
 with right:
     st.markdown("### 🎧 Race engineer")
-    st.caption(f"Weather: **{g['weather']}** · Stops: **{mine['stops']}**")
+    st.caption(f"Track: **{g['weather']}** · Stops: **{mine['stops']}**")
+    with st.container(border=True):
+        forecast_display(g)
+        if g["weather_history"]:
+            with st.expander("Weather forecast accuracy · past laps"):
+                st.dataframe(pd.DataFrame(g["weather_history"][::-1]), hide_index=True, use_container_width=True, height=170)
     engineer = engineering_report(g)
     with st.container(border=True):
         st.markdown("**📻 PIT ENGINEER — LIVE STRATEGY**")
@@ -518,6 +594,7 @@ with right:
         else:
             st.info(engineer["reason"])
         st.caption(f"Suggested pace: **{engineer['recommendation']}** · Pit suggestion: **{engineer['pit']}**")
+        st.caption("🌦️ Forecast note: " + weather_strategy(g)[1])
         with st.expander("🔬 Why this advice? See the statistics"):
             for detail in engineer["details"]:
                 st.write("• " + detail)
@@ -593,4 +670,4 @@ with right:
         st.session_state.pit_wall_v3 = None
         st.rerun()
 
-st.caption("Educational simulation: current drivers are real, race times/qualifying/pit stops are modeled, and circuit shapes are illustrative. Race tracker updates once per completed lap.")
+st.caption("Educational simulation: driver names are real; race outcomes, forecasts, tire choices and probabilities are simulated. Forecast chance does not guarantee rain. Race tracker updates each lap.")
