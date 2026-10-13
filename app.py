@@ -1,986 +1,1025 @@
-import html
-import json
 import random
-import time
-import math
-import io
-import datetime
-from statistics import mean, median
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from html import escape
+import json
+from io import BytesIO
+from datetime import datetime, timezone
+from uuid import uuid4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.units import inch
 import pandas as pd
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
-from reportlab.pdfgen import canvas
-from reportlab.lib.colors import HexColor
 
-st.set_page_config(page_title="F1: The Pit Wall", page_icon="🏎️", layout="wide", initial_sidebar_state="collapsed")
-
-# Real driver/team names; all performance, weather and race events are SIMULATED.
-GRID = [
-    ("George Russell", "Mercedes", "#27F4D2"), ("Kimi Antonelli", "Mercedes", "#27F4D2"),
-    ("Charles Leclerc", "Ferrari", "#E80020"), ("Lewis Hamilton", "Ferrari", "#E80020"),
-    ("Lando Norris", "McLaren", "#FF8000"), ("Oscar Piastri", "McLaren", "#FF8000"),
-    ("Max Verstappen", "Red Bull", "#3671C6"), ("Isack Hadjar", "Red Bull", "#3671C6"),
-    ("Liam Lawson", "Racing Bulls", "#6692FF"), ("Arvid Lindblad", "Racing Bulls", "#6692FF"),
-    ("Pierre Gasly", "Alpine", "#FF87BC"), ("Franco Colapinto", "Alpine", "#FF87BC"),
-    ("Esteban Ocon", "Haas", "#B6BABD"), ("Oliver Bearman", "Haas", "#B6BABD"),
-    ("Nico Hulkenberg", "Audi", "#C4E300"), ("Gabriel Bortoleto", "Audi", "#C4E300"),
-    ("Carlos Sainz", "Williams", "#64C4FF"), ("Alex Albon", "Williams", "#64C4FF"),
-    ("Fernando Alonso", "Aston Martin", "#229971"), ("Lance Stroll", "Aston Martin", "#229971"),
-    ("Sergio Perez", "Cadillac", "#969BA2"), ("Valtteri Bottas", "Cadillac", "#969BA2"),
-]
-TEAM = {n: t for n, t, _ in GRID}
-COLOR = {n: c for n, _, c in GRID}
-
-# Stylized circuit silhouettes, designed for an educational illustration.
-TRACKS = {
-    "Monza": (83.0, 21., 1.00, .07, "M 75 45 L 105 35 L 137 83 L 175 123 L 216 133 L 295 134 L 328 142 L 328 157 L 277 159 L 209 157 L 135 157 Q 109 155 100 139 L 89 104 L 68 69 Z"),
-    "Silverstone": (91.5, 23., 1.22, .19, "M 55 82 L 116 37 Q 126 31 138 44 L 200 90 L 200 136 L 236 151 L 260 126 L 265 76 Q 279 59 295 77 L 310 108 L 313 156 L 266 171 L 240 156 L 210 179 L 177 168 L 126 144 L 73 113 Z"),
-    "Spa-Francorchamps": (105., 24., 1.10, .23, "M 56 173 L 88 133 L 127 94 L 170 69 L 213 44 L 240 53 L 268 37 L 301 65 L 313 92 L 286 78 L 257 65 L 233 76 L 202 93 L 194 118 L 227 135 L 253 158 L 246 184 L 209 167 L 172 138 L 131 146 L 95 164 Z"),
-    "Singapore": (102., 27., 1.40, .18, "M 59 106 L 96 50 L 125 75 L 141 61 L 190 95 L 250 100 L 255 39 L 273 47 L 281 91 L 289 130 L 270 163 L 225 165 L 197 151 L 145 150 L 100 143 L 83 167 L 62 145 Z"),
-    "Bahrain": (94., 23., 1.10, .02, "M 65 149 L 87 36 L 118 71 L 155 84 L 126 114 L 207 114 L 240 47 L 264 69 L 300 151 Z"),
-    "Suzuka": (92., 23., 1.15, .22, "M 46 63 Q 78 110 118 108 L 142 70 L 156 121 L 181 115 Q 201 74 224 96 L 278 155 Q 294 187 311 175 Q 321 165 288 138 L 245 89 Q 209 50 184 87 L 157 101 Q 135 105 112 85 Q 85 66 81 38 Q 52 31 46 63 Z"),
-    "Monaco": (77., 26., 1.08, .14, "M 50 160 Q 50 108 83 79 L 137 35 L 193 70 L 218 91 L 256 93 Q 280 92 287 67 L 318 57 L 325 81 L 294 100 Q 263 139 232 124 L 172 94 L 132 62 Q 102 49 78 99 L 63 168 Z"),
-    "Interlagos": (72., 22., 1.12, .25, "M 74 78 Q 106 49 147 48 Q 181 41 188 67 L 182 95 Q 221 46 244 55 Q 266 68 245 100 L 285 129 L 271 158 Q 223 150 199 122 L 164 103 L 131 151 Q 98 173 73 148 Q 48 117 74 78 Z"),
-    "Las Vegas": (94., 22., .90, .04, "M 65 151 L 95 98 L 113 102 L 113 43 L 133 37 L 151 67 L 278 67 L 268 35 L 284 36 L 309 73 L 310 156 L 153 156 L 105 136 Z"),
-    "Montreal": (76., 22., 1.05, .20, "M 57 72 L 135 79 L 180 102 L 215 124 L 248 137 L 273 117 L 304 125 L 286 150 L 241 158 L 208 146 L 176 131 L 133 93 Z"),
-    "Miami": (90., 22., 1.00, .15, "M 56 62 L 299 62 L 293 89 L 309 98 L 293 112 L 249 109 Q 208 158 162 157 L 117 142 Q 90 115 60 136 L 51 117 Q 71 88 113 108 L 164 131 L 194 115 L 114 74 Z"),
-}
-
-DRY = {"Soft", "Medium", "Hard"}
-TIRE_PACE = {"Soft": -1.1, "Medium": 0., "Hard": .7, "Intermediate": 2.6, "Wet": 4.5}
-TIRE_WEAR = {"Soft": .28, "Medium": .14, "Hard": .075, "Intermediate": .17, "Wet": .13}
-TIRE_SYMBOL = {"Soft": "🔴", "Medium": "🟡", "Hard": "⚪", "Intermediate": "🟢", "Wet": "🔵"}
-
+st.set_page_config(page_title="You're the Manager", page_icon="⚾", layout="wide")
 st.markdown("""<style>
-.block-container {padding-top:.55rem; padding-bottom:1rem; max-width:1500px}
-h1 {font-size:1.8rem !important; margin-bottom:.1rem !important}
-h3 {margin-top:.4rem !important}
-[data-testid="stMetric"] {background:#17253b !important; border:1px solid #415674; padding:9px 12px; border-radius:10px}
-[data-testid="stMetric"] label, [data-testid="stMetric"] [data-testid="stMetricLabel"], [data-testid="stMetric"] [data-testid="stMetricLabel"] * {color:#c8d7ec !important; opacity:1 !important}
-[data-testid="stMetricValue"], [data-testid="stMetricValue"] * {color:#ffffff !important; opacity:1 !important}
-[data-testid="stMetricDelta"], [data-testid="stMetricDelta"] * {opacity:1 !important}
-div.stButton > button[kind="primary"] {background:#ff7a2c; color:#141414; font-weight:800}
+:root {--orange:#f58b31;--navy:#102338;--cream:#f7e7c5}
+.block-container{max-width:1880px;padding-top:.35rem;padding-bottom:1.2rem}
+h1,h2,h3{font-family:Arial,sans-serif;letter-spacing:.2px}
+h1{color:#e87623;font-weight:900!important}
+[data-testid="stMetric"]{background:linear-gradient(135deg,#132e46,#1c4b5a);padding:12px;border:1px solid #3a6870;border-radius:12px}
+[data-testid="stMetric"] *{color:#fff!important}
+[data-testid="stVerticalBlockBorderWrapper"]{border-radius:14px}
+.stButton>button[kind="primary"]{background:#e76e21;color:white;font-weight:800;border-radius:10px;border:0}
+.stButton>button{border-radius:10px;font-weight:650}
+[data-testid="stDataFrame"]{border-radius:10px;overflow:hidden}
+.broadcast{background:linear-gradient(100deg,#0e253b,#20506a);border:1px solid #376175;color:#fff;padding:13px 20px;border-radius:15px;margin:8px 0 13px}
+.broadcast .eyebrow{font:700 12px Arial;letter-spacing:2px;color:#ffb561}
+.broadcast .headline{font:900 clamp(18px,2.6vw,30px) Arial;margin:5px 0}
+.broadcast .detail{color:#dae6ec;font:14px Arial}
+.pitcher-card{border-radius:15px;background:linear-gradient(125deg,#173349,#294e5a);padding:14px;color:#fff;border:1px solid #3e7280;margin:8px 0}
+.pitcher-card .label{letter-spacing:1.6px;color:#ffb868;font:700 11px Arial}
+.pitcher-card .name{font:800 21px Arial;margin:6px 0}
+.pitcher-card .stats{font:13px Arial;color:#d2e2e6}
+.lineup-current{font-weight:800}
+.matchup-tile{background:linear-gradient(135deg,#102a40,#1a4852);color:#fff;border:1px solid #47616d;border-radius:14px;padding:12px;margin:5px 0}
+.matchup-tile .eyebrow{color:#ffbd75;font:800 11px Arial;letter-spacing:1.2px}
+.matchup-tile .head{font:800 18px Arial;margin:5px 0}
+.matchup-tile .data{color:#d3e8ea;font:13px Arial}
+.matchup-tile .status{float:right;color:#a5f0ba;font:800 11px Arial}
+.compact-note{font:12px Arial;color:#d8e8ea;background:#173447;border-left:4px solid #f58b31;padding:8px 11px;border-radius:6px}
+
+
+.score-strip{display:flex;justify-content:space-around;align-items:center;gap:8px;background:#15364b;color:#c9e5eb;border-radius:10px;padding:9px 11px;margin:4px 0 12px;font:700 12px Arial;flex-wrap:wrap}
+.score-strip b{color:#ffbc75;font-size:20px;margin-left:5px}
 </style>""", unsafe_allow_html=True)
+API = 'https://statsapi.mlb.com/api/v1'
 
 
-def build_forecast(seed, track, laps):
-    """A fictional forecast issued at race start; probabilities are not outcomes."""
-    rng = random.Random(f"forecast-{seed}")
-    climate = TRACKS[track][3]
-    # A slowly evolving weather front creates meaningful multi-lap risk.
-    pressure = rng.uniform(-.10, .17)
-    result = []
-    for lap in range(1, laps + 1):
-        pressure = max(-.20, min(.69, .78 * pressure + rng.uniform(-.13, .16)))
-        # Track baseline adds dry/wet climate variety. Clamp for readability.
-        probability = max(.02, min(.88, climate * 1.6 + pressure))
-        result.append(round(probability, 3))
+def number(x, default=0.0):
+    try: return float(x)
+    except (TypeError, ValueError): return default
+
+
+def bounded(x, a, b): return max(a, min(b, x))
+def throwing(x): return {'R':'RHP','L':'LHP'}.get(x,'?HP')
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch(path, params=None):
+    response = requests.get(f'{API}/{path}', params=params or {}, timeout=18)
+    response.raise_for_status()
+    return response.json()
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def team_list(year):
+    return sorted(fetch('teams', {'sportId':1,'season':year}).get('teams', []), key=lambda t:t['name'])
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def roster(team_id, year):
+    return fetch(f'teams/{team_id}/roster', {'rosterType':'fullSeason','season':year}).get('roster',[])
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def player(pid, year, group):
+    data=fetch(f'people/{pid}')
+    info=(data.get('people') or [{}])[0]
+    stats=fetch(f'people/{pid}/stats',{'stats':'season','group':group,'season':year,'gameType':'R'})
+    s=next((split.get('stat',{}) for section in stats.get('stats',[]) for split in section.get('splits',[]) if split.get('stat')), {})
+    return dict(id=pid,name=info.get('fullName','Unknown'),throws=info.get('pitchHand',{}).get('code','?'),bats=info.get('batSide',{}).get('code','?'),stats=s)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_squad(team_id, year, group):
+    choices=[]
+    for item in roster(team_id,year):
+        pos=item.get('position',{}).get('abbreviation')
+        if (group=='pitching') == (pos in ('P','TWP')):
+            pid=item.get('person',{}).get('id')
+            if pid: choices.append(pid)
+    result=[]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        jobs=[pool.submit(player,pid,year,group) for pid in choices]
+        for job in as_completed(jobs):
+            try:
+                p=job.result(); s=p['stats']
+                if group=='pitching' and number(s.get('gamesPlayed')):
+                    starts=number(s.get('gamesStarted')); games=number(s.get('gamesPlayed'))
+                    p['role']='SP' if starts >= max(3,games*.35) else 'RP'
+                    p['relief_apps']=max(0,games-starts); result.append(p)
+                elif group=='hitting' and number(s.get('atBats')):
+                    result.append(p)
+            except (requests.RequestException, ValueError, KeyError):
+                continue
+    if group=='pitching':
+        return (sorted([p for p in result if p['role']=='SP'],key=lambda p:-number(p['stats'].get('gamesStarted')))[:5]
+                +sorted([p for p in result if p['role']=='RP'],key=lambda p:-p['relief_apps'])[:8])
+    return sorted(result,key=lambda p:-number(p['stats'].get('plateAppearances'),number(p['stats'].get('atBats'))))[:13]
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def handed_splits(player_id, year, group):
+    """Observed MLB season split stats against L/R opponent hands.
+
+    Hitting: vl/vs LHP, vr/vs RHP.
+    Pitching: vl/vs LHB, vr/vs RHB.
+    Missing or unidentified records are left missing.
+    """
+    result = {}
+    for hand_code, situation in (("L", "vl"), ("R", "vr")):
+        try:
+            payload = fetch(
+                f"people/{player_id}/stats",
+                {"stats": "statSplits", "group": group,
+                 "season": year, "gameType": "R", "sitCodes": situation}
+            )
+            for section in payload.get("stats", []):
+                for entry in section.get("splits", []):
+                    values = entry.get("stat") or {}
+                    # A single-situation request can still contain
+                    # several records: accept only a matching situation
+                    # or an unambiguous single-record response.
+                    meta = entry.get("split") or {}
+                    code = str(entry.get("sitCode") or meta.get("code") or "").lower()
+                    description = str(meta.get("description") or "").lower()
+                    if code and code not in (situation,):
+                        continue
+                    if description:
+                        if hand_code == "L" and "right" in description:
+                            continue
+                        if hand_code == "R" and "left" in description:
+                            continue
+                    if number(values.get("atBats")) > 0:
+                        result[hand_code] = values
+                        break
+                if hand_code in result:
+                    break
+        except (requests.RequestException, ValueError, KeyError):
+            continue
     return result
 
 
-def rain_outlook(g):
-    """Return upcoming lap-specific risk of precipitation, not a certainty."""
-    return [
-        (i + 1, g["forecast"][i])
-        for i in range(g["lap"], min(g["total"], g["lap"] + 4))
-    ]
-
-
-def weather_strategy(g):
-    """A separate weather briefing; never promises a future outcome."""
-    upcoming = rain_outlook(g)
-    if not upcoming:
-        return "Race complete", "No upcoming forecast laps."
-    risk = upcoming[0][1]
-    near = max((p for _, p in upcoming[:3]), default=risk)
-    driver = you(g)
-    if g["weather"] == "Wet":
-        return "Wet track", "Wet tires are favored now. Monitor the forecast for drying before changing back."
-    if g["weather"] == "Damp":
-        if risk >= .45:
-            return "Rain may intensify", "Intermediates are a reasonable choice; wet tires could pay off if rain builds, but the forecast is uncertain."
-        return "Damp track", "Intermediates suit current conditions. Check the next-lap rain chance before switching to slicks."
-    if risk >= .65:
-        return "High rain risk", "Rain is likely next lap, but the track is still dry. Consider whether a stop now is worth its time cost."
-    if near >= .48:
-        return "Possible weather change", "Rain risk increases within 3 laps. A short dry-tire stint may be better than committing to a long run."
-    if driver["tire"] not in DRY:
-        return "Track currently dry", "Dry tires are faster now. Don't keep wet-weather tires solely because rain is possible."
-    return "Mostly dry outlook", "Slick tires are favored now, but keep watching the updated forecast."
-
-
-def forecast_display(g):
-    rows = rain_outlook(g)
-    if not rows:
-        st.caption("Race complete — no future forecast laps.")
-        return
-    st.markdown("**🌧️ Weather radar · next laps**")
-    st.caption("Forecast probabilities are simulated. They indicate a chance of rain, not a guaranteed change in track conditions.")
-    for lap, prob in rows:
-        left, right = st.columns([1, 3], vertical_alignment="center")
-        left.markdown(f"**L{lap}** · {prob:.0%}")
-        right.progress(prob)
-    heading, advice = weather_strategy(g)
-    st.markdown(f"**{heading}:** {advice}")
-
-
-def new_game(track, laps, player_name):
-    seed = random.SystemRandom().randrange(1_000_000_000)
-    rng = random.Random(seed)
-    drivers = []
-    for name, team, color in GRID:
-        drivers.append(dict(name=name, team=team, color=color,
-                            skill=rng.uniform(-.65, .65), qual=None,
-                            elapsed=0., tire="Medium", age=0.,
-                            used=["Medium"], stops=0, history=[]))
-    return dict(track=track, total=laps, player=player_name, seed=seed,
-                forecast=build_forecast(seed, track, laps), weather_history=[],
-                stage="qualifying", lap=0, weather="Dry", was_wet=False,
-                safety=False, drivers=drivers, events=[], entries=[],
-                snapshots=[], qual_results=[], pit_challenge=None, finished=False, qual_practice=None, qual_score=None,
-                start_at=None, lights_out_at=None, launch_result=None, start_delay=0.0, launch_reaction=None,
-                race_log=[], engineer_choices=[], sector_data=None, incidents=[], strategy_notes=[], championship_awarded=False)
-
-
-def ranking(g):
-    return sorted(g["drivers"], key=lambda d: d["elapsed"])
-
-
-def you(g):
-    return next(d for d in g["drivers"] if d["name"] == g["player"])
-
-
-def sector_reference(g):
-    """Simulated sector times for a small data-driven qualifying decision."""
-    rng = random.Random(f"sectors-{g['seed']}")
-    base = TRACKS[g["track"]][0] / 3
-    return [round(base + rng.uniform(-1.4, 1.4), 2) for _ in range(3)]
-
-
-def start_lights(g):
-    rng = random.Random(f"startlights-{g['seed']}")
-    now = time.time()
-    g["start_at"] = now
-    g["lights_out_at"] = now + 5 * 0.65 + rng.uniform(0.75, 2.1)
-    g["stage"] = "start"
-
-
-def register_launch(g):
-    now = time.time()
-    delta = now - g["lights_out_at"]
-    if delta < 0:
-        result, penalty = "JUMP START — +5 seconds", 5.0
-    elif delta < 0.25:
-        result, penalty = f"EXCELLENT REACTION — {delta:.2f}s", -0.45
-    elif delta < 0.55:
-        result, penalty = f"GOOD START — {delta:.2f}s", -0.15
-    elif delta < 1.2:
-        result, penalty = f"CLEAN START — {delta:.2f}s", 0.12
-    else:
-        result, penalty = f"SLOW START — {delta:.2f}s", min(2.5, .12 + (delta - 1.2) * .4)
-    you(g)["elapsed"] += penalty
-    g["start_delay"] = round(penalty, 3)
-    g["launch_reaction"] = round(delta, 3)
-    g["launch_result"] = result
-    g["events"] = ["🚦 " + result]
-    g["stage"] = "race"
-
-
-# Fragment keeps the five lights refreshing without rerendering the entire dashboard.
-# Timings include browser/network latency and are NOT competition-grade measurements.
-@st.fragment(run_every=0.2)
-def light_challenge(g):
-    now = time.time()
-    elapsed = now - g["start_at"]
-    illuminated = min(5, max(0, int(elapsed / 0.65) + 1))
-    if now >= g["lights_out_at"]:
-        illuminated = 0
-    lights = " ".join("🔴" if i < illuminated else "⚫" for i in range(5))
-    st.markdown(f"<div style='font-size:2.3rem;text-align:center;padding:10px;background:#14253b;border-radius:14px'>{lights}</div>", unsafe_allow_html=True)
-    st.caption("Five red lights, then LIGHTS OUT. Avoid an early click! Browser/network delay affects measured reaction time.")
-    if now >= g["lights_out_at"]:
-        st.success("LIGHTS OUT — GO!")
-    elif illuminated == 5:
-        st.warning("All five lights on. Wait until they go out!")
-    else:
-        st.info(f"Lights illuminated: {illuminated}/5")
-    if st.button("🚀 LAUNCH!", type="primary", use_container_width=True):
-        register_launch(g)
-        st.rerun()
-
-
-def overtake_outcome(g, mode, tactic, rng, events):
-    """Risk/reward adjustment; position still comes from elapsed race times."""
-    me = you(g)
-    cars = ranking(g)
-    idx = next(i for i, d in enumerate(cars) if d is me)
-    ahead = cars[idx-1] if idx else None
-    behind = cars[idx+1] if idx+1 < len(cars) else None
-    if tactic == "Attack" and ahead:
-        gap = me["elapsed"] - ahead["elapsed"]
-        if gap <= 2.5:
-            wear = min(1.5, me["age"] / max(1, expected_life(g, me["tire"])))
-            chance = min(.78, max(.13, .58 - .14 * gap - .10 * wear + (.10 if mode == "Push" else 0)))
-            success = rng.random() < chance
-            if success:
-                me["elapsed"] -= gap + rng.uniform(.09, .32)
-                events.append(f"🏎️ OVERTAKE: Attack worked ({chance:.0%} estimate)!")
-            else:
-                me["elapsed"] += rng.uniform(.2, .9)
-                events.append(f"🏎️ Attack failed ({chance:.0%} estimate); time lost")
-        else:
-            events.append("Attack selected, but rival is too far away for a passing attempt")
-    elif tactic == "Defend" and behind:
-        gap = behind["elapsed"] - me["elapsed"]
-        if gap < 2.0:
-            me["elapsed"] -= .16
-            me["age"] += .25
-            events.append("🛡️ Defensive driving: slight time advantage, extra tire wear")
-        else:
-            events.append("Defend selected; no immediate threat behind")
-
-
-def incident_outcome(g, rng, events):
-    """Low-frequency events. Red flags cause a neutralized lap with no racing advantage."""
-    roll = rng.random()
-    if roll < .025:
-        events.append("🟥 RED FLAG: race neutralized; everyone loses similar time")
-        for d in g["drivers"]:
-            d["elapsed"] += 35.0
-        g["incidents"].append({"Lap": g["lap"]+1, "Event": "Red flag"})
-    elif roll < .07:
-        events.append("🟨 Yellow flags after an incident: drivers slow down")
-        for d in g["drivers"]:
-            d["elapsed"] += 6.0
-        g["incidents"].append({"Lap": g["lap"]+1, "Event": "Yellow flag"})
-
-
-def championship_table(history):
-    points = [25,18,15,12,10,8,6,4,2,1]
-    total = {name:0 for name,_,_ in GRID}
-    for race in history:
-        for position, name in enumerate(race["finish"], 1):
-            if position <= 10: total[name] += points[position - 1]
-    return pd.DataFrame([{"Driver":n, "Team":TEAM[n], "Points":pt} for n,pt in total.items()]).sort_values(["Points","Driver"], ascending=[False, True])
-
-
-def qualify(g, mode, tire, accuracy_score=0):
-    rng = random.Random(f"qual-{g['seed']}")
-    base = TRACKS[g["track"]][0]
-    for d in g["drivers"]:
-        dr_mode = mode if d["name"] == g["player"] else rng.choice(["Balanced", "Push"])
-        dr_tire = tire if d["name"] == g["player"] else "Soft"
-        adjustment = {"Push": -.65, "Balanced": 0., "Conserve": .55}[dr_mode]
-        if d["name"] == g["player"]:
-            adjustment -= 0.12 * accuracy_score  # small reward for correct statistics
-        compound = {"Soft": -1., "Medium": -.15, "Hard": .45}[dr_tire]
-        d["qual"] = round(base + d["skill"] + compound + adjustment + rng.gauss(0, .48), 3)
-    order = sorted(g["drivers"], key=lambda d: d["qual"])
-    g["qual_results"] = [dict(Grid=i, Driver=d["name"], Team=d["team"],
-                               **{"Qualifying lap": f"{d['qual']:.3f}s"})
-                         for i, d in enumerate(order, 1)]
-    # Racing offsets use grid gaps, not raw qualifying lap-time differences.
-    for i, d in enumerate(order):
-        d["elapsed"] = i * 1.25
-    start_lights(g)
-    g["events"] = ["🏁 Qualifying complete! Get ready for five red lights."]
-
-
-# Estimated useful tire life: classroom model, not manufacturer data.
-# A driver can exceed it, but the lap-time penalty becomes increasingly expensive.
-TIRE_LIFE = {"Soft": 11, "Medium": 19, "Hard": 29, "Intermediate": 13, "Wet": 17}
-
-
-def expected_life(g, compound):
-    return max(3, round(TIRE_LIFE[compound] / TRACKS[g["track"]][2]))
-
-
-def qualifying_practice(g):
-    rng = random.Random(f"practice-{g['seed']}")
-    base = TRACKS[g["track"]][0] - 1.1
-    # Five one-decimal lap times with deliberately repeated values so mode exists.
-    offsets = rng.sample([-0.6, -0.3, 0.0, 0.3, 0.6], 4)
-    offsets.append(rng.choice(offsets))
-    rng.shuffle(offsets)
-    return [round(base + x, 1) for x in offsets]
-
-
-def evaluate_qualifying(practice, answers):
-    counts = {v: practice.count(v) for v in set(practice)}
-    most = max(counts.values())
-    modal = min(k for k, v in counts.items() if v == most)
-    correct = [mean(practice), median(practice), modal, max(practice) - min(practice)]
-    return sum(abs(a - c) <= 0.051 for a, c in zip(answers, correct)), correct
-
-
-def proximity(g):
-    cars = ranking(g)
-    p = next(i for i, d in enumerate(cars) if d["name"] == g["player"])
-    mytime = cars[p]["elapsed"]
-    ahead = (cars[p-1]["name"], max(0., mytime - cars[p-1]["elapsed"])) if p else None
-    behind = (cars[p+1]["name"], max(0., cars[p+1]["elapsed"] - mytime)) if p < len(cars)-1 else None
-    return ahead, behind
-
-
-def new_targets(g):
-    rng = random.Random(f"pit-{g['seed']}-{g['lap']}")
-    return [rng.randint(15, 85) for _ in range(3)]
-
-
-def pit_quality(targets, answers, elapsed_seconds):
-    # A fast, precise response earns a smaller stationary pit-stop component.
-    errors = [abs(a-b) for a, b in zip(answers, targets)]
-    accuracy = sum(errors)
-    # Larger total errors and longer completion time increase the stop duration.
-    stationary = min(11., 2.1 + .11 * accuracy + .045 * min(elapsed_seconds, 90.))
-    grade = "Lightning fast" if stationary < 3.0 else "Clean stop" if stationary < 5.0 else "Slow stop"
-    return round(stationary, 2), grade
-
-
-def sim_lap(g, pit_tire, mode, stationary=None, tactic="Balanced", engineer_follow=False):
-    lap = g["lap"] + 1
-    rng = random.Random(f"race-{g['seed']}-{lap}")
-    base, pit_loss, wear, _, _ = TRACKS[g["track"]]
-    w = g["weather"]
-    rain_chance = g["forecast"][lap - 1]
-    # Forecast sets a probability; the outcome is sampled independently.
-    is_raining = rng.random() < rain_chance
-    if w == "Dry" and is_raining:
-        g["weather"] = "Damp"
-    elif w == "Damp":
-        if is_raining and rng.random() < .65:
-            g["weather"] = "Wet"
-        elif not is_raining and rng.random() < .50:
-            g["weather"] = "Dry"
-    elif w == "Wet" and not is_raining and rng.random() < .65:
-        g["weather"] = "Damp"
-    g["weather_history"].append({"Lap": lap, "Rain chance": round(100 * rain_chance), "Rained": "Yes" if is_raining else "No", "Track": g["weather"]})
-    g["was_wet"] = g["was_wet"] or (g["weather"] != "Dry")
-    g["safety"] = rng.random() < .09
-    events = []
-    if g["weather"] != w: events.append(f"🌦️ Weather: {w} → {g['weather']}")
-    if g["safety"]: events.append("🚨 Safety car: pit lane loses less race time")
-    entry_loss = (pit_loss - 2.5) * (.53 if g["safety"] else 1.)
-    driver = you(g)
-    actual_pit = 0.
-    if pit_tire != "Stay out":
-        actual_pit = entry_loss + (stationary if stationary is not None else 4.)
-        driver["elapsed"] += actual_pit
-        driver["tire"] = pit_tire
-        driver["age"] = 0.
-        driver["used"].append(pit_tire)
-        driver["stops"] += 1
-        events.append(f"🔧 Pit: {pit_tire} | {stationary:.2f}s stationary | +{actual_pit:.1f}s race loss")
-    for d in g["drivers"]:
-        if d is not driver:
-            remaining = g["total"] - lap
-            worn = d["age"] > expected_life(g, d["tire"])
-            wrong = (g["weather"] == "Wet" and d["tire"] in DRY) or (g["weather"] == "Dry" and d["tire"] not in DRY)
-            needs_second = (remaining <= 2 and not g["was_wet"] and len(set(d["used"]) & DRY) < 2)
-            if wrong or needs_second or (worn and remaining > 2):
-                target = ("Wet" if g["weather"] == "Wet" else "Intermediate" if g["weather"] == "Damp"
-                          else "Hard" if d["tire"] != "Hard" else "Medium")
-                d["elapsed"] += entry_loss + rng.uniform(2.1, 4.8)
-                d["tire"], d["age"] = target, 0.
-                d["used"].append(target)
-                d["stops"] += 1
-        style = mode if d is driver else rng.choices(["Push", "Balanced", "Conserve"], [2, 6, 2])[0]
-        compound = d["tire"]
-        conditions = g["weather"]
-        weather_penalty = (0. if compound in DRY else 6. if compound == "Intermediate" else 10.) if conditions == "Dry" else (
-            3.8 if compound in DRY else 0. if compound == "Intermediate" else 2.) if conditions == "Damp" else (
-            13.5 if compound in DRY else 2. if compound == "Intermediate" else 0.)
-        lap_time = base + d["skill"] + TIRE_PACE[compound] + d["age"] * TIRE_WEAR[compound] * wear + weather_penalty + {"Push": -.75, "Balanced": 0., "Conserve": .65}[style] + rng.gauss(0, .32)
-        if g["safety"]: lap_time = lap_time * 1.27 + 3.
-        d["age"] += {"Push": 1.65, "Balanced": 1., "Conserve": .62}[style]
-        d["elapsed"] += lap_time
-        d["history"].append({"Lap": lap, "Time": round(lap_time, 2), "Tire": compound, "Weather": conditions})
-    incident_outcome(g, rng, events)
-    overtake_outcome(g, mode, tactic, rng, events)
-    ranked = ranking(g)
-    leader = ranked[0]["elapsed"]
-    for i, d in enumerate(ranked, 1): d["history"][-1]["Position"] = i
-    position = next(i for i, d in enumerate(ranked, 1) if d is driver)
-    g["snapshots"].append([dict(Lap=lap, Pos=i, Driver=d["name"], Team=d["team"], Gap=round(d["elapsed"]-leader, 2), Tire=d["tire"], Stops=d["stops"], Time=d["history"][-1]["Time"]) for i, d in enumerate(ranked, 1)])
-    g["entries"].append(dict(Lap=lap, Time=driver["history"][-1]["Time"], Pos=position,
-                             Gap=round(driver["elapsed"]-leader, 2), Tire=driver["tire"],
-                             Drive=mode, Pit=pit_tire, PitLoss=round(actual_pit, 2), Tactic=tactic, FollowEngineer=engineer_follow, Weather=g["weather"], RainChance=f"{rain_chance:.0%}", SafetyCar=g["safety"]))
-    g["lap"], g["events"] = lap, events
-    g["pit_challenge"] = None
-    g["engineer_choices"].append({"Lap":lap,"Followed recommendation":engineer_follow,"Tactic":tactic,"Driving pace":mode,"Tires":pit_tire})
-    if lap >= g["total"]:
-        g["finished"] = True
-        g["events"].append("🏁 Chequered flag — race complete!")
-        if not g["was_wet"] and len(set(driver["used"]) & DRY) < 2:
-            g["events"].append("⚠️ Dry-weather two-compound requirement missed")
-
-
-def circuit_map(g):
-    # HTML component iframe avoids Streamlit Markdown showing raw HTML tags.
-    path = TRACKS[g["track"]][4]
-    ranked = ranking(g)
-    lead = ranked[0]["elapsed"]
-    base = TRACKS[g["track"]][0]
-    cars = [{"name": d["name"], "color": "#ff872d" if d["name"] == g["player"] else d["color"],
-             "mine": d["name"] == g["player"], "pos": i,
-             "fraction": (.72 + .17 * g["lap"] - (d["elapsed"]-lead)/base) % 1}
-            for i, d in enumerate(ranked[:12], 1)]
-    markup = '''<!doctype html><html><head><meta charset="utf-8"><style>
-body{margin:0;background:#111d2f;font-family:Arial,sans-serif;color:#edf2fa}
-.main{border:1px solid #3b4b63;border-radius:12px;padding:9px 12px}
-.title{font-size:14px;font-weight:bold}.sub{font-size:11px;color:#a9b8ca}
-svg{display:block;width:100%;height:205px;background:#0b1727;border-radius:9px}
-</style></head><body><div class="main"><div class="title">🏁 __TITLE__ · Simulated circuit position</div>
-<div class="sub">Orange = your car · 12 leading cars shown · positions update each lap</div>
-<svg viewBox="0 0 380 220"><path id="route" fill="none" stroke="#34455c" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" />
-<path id="inner" fill="none" stroke="#e5ebf5" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" />
-<g id="cars"></g></svg></div><script>
-const path=__PATH__, cars=__CARS__;
-for(const id of ['route','inner'])document.getElementById(id).setAttribute('d',path);
-const route=document.getElementById('route');const length=route.getTotalLength();const layer=document.getElementById('cars');
-for(const c of cars){const p=route.getPointAtLength(length*c.fraction);const e=document.createElementNS('http://www.w3.org/2000/svg','circle');
-e.setAttribute('cx',p.x);e.setAttribute('cy',p.y);e.setAttribute('r',c.mine?7:4.6);e.setAttribute('fill',c.color);e.setAttribute('stroke','#0c1420');e.setAttribute('stroke-width',c.mine?'3':'1.5');
-const tip=document.createElementNS('http://www.w3.org/2000/svg','title');tip.textContent='P'+c.pos+' '+c.name;e.appendChild(tip);layer.appendChild(e)}
-</script></body></html>'''
-    markup = markup.replace("__TITLE__", html.escape(g["track"])).replace("__PATH__", json.dumps(path)).replace("__CARS__", json.dumps(cars))
-    components.html(markup, height=268, scrolling=False)
-
-
-def timer_stats(g):
-    lap_times = [x["Time"] for x in g["entries"]]
-    if not lap_times: return None
-    last, best, avg = lap_times[-1], min(lap_times), mean(lap_times)
-    prev = lap_times[-2] if len(lap_times) > 1 else None
-    rivals = [mean([h["Time"] for h in d["history"]]) for d in g["drivers"] if d["name"] != g["player"] and d["history"]]
-    field_avg = mean(rivals) if rivals else 0.
-    return last, best, avg, prev, field_avg
-
-
-
-
-def recent_pace(driver, window=3):
-    """Mean of the most recent green-flag laps, excluding major weather changes."""
-    history = driver["history"]
-    if not history:
+def observed_batting_split(hitter, pitcher_hand, year):
+    if pitcher_hand not in ("L", "R"):
         return None
-    # Compare only like-for-like conditions, using the latest weather.
-    current_weather = history[-1]["Weather"]
-    candidates = [h["Time"] for h in history if h["Weather"] == current_weather]
-    if not candidates:
+    return handed_splits(hitter["id"], year, "hitting").get(pitcher_hand)
+
+
+def observed_pitching_split(pitcher_obj, hitter_hand, year):
+    if hitter_hand not in ("L", "R"):
         return None
-    return mean(candidates[-window:])
+    return handed_splits(pitcher_obj["id"], year, "pitching").get(hitter_hand)
 
 
-def engineering_report(g):
-    """Data-grounded advice; forecasts are simplified estimates, not known outcomes."""
-    driver = you(g)
-    cars = ranking(g)
-    index = next(i for i, d in enumerate(cars) if d is driver)
-    remaining = g["total"] - g["lap"]
-    ahead = cars[index - 1] if index > 0 else None
-    behind = cars[index + 1] if index + 1 < len(cars) else None
-    my_pace = recent_pace(driver)
-    wear_limit = expected_life(g, driver["tire"])
-    wear_ratio = driver["age"] / wear_limit
-    messages = []
-    details = []
-    recommendation = "Balanced"
-    pit_advice = "Stay out"
-    urgent = False
-    if not g["entries"]:
-        return {
-            "headline": "Gather baseline data",
-            "reason": "Run a lap to establish your race pace and learn where you stand.",
-            "recommendation": recommendation,
-            "pit": pit_advice,
-            "details": ["Your starting grid is set by qualifying; on-track pace has not yet been measured."],
-            "severity": "info",
-        }
-    if my_pace is not None:
-        details.append(f"Your recent mean: {my_pace:.2f}s/lap (last up to 3 laps in current weather).")
-    if ahead and my_pace is not None:
-        gap = driver["elapsed"] - ahead["elapsed"]
-        rival_pace = recent_pace(ahead)
-        if rival_pace is not None:
-            gain = rival_pace - my_pace
-            if gain > 0.08:
-                laps_to_catch = gap / gain
-                details.append(f"Ahead: {ahead['name']} +{gap:.2f}s; estimated gain {gain:.2f}s/lap.")
-                details.append(f"At unchanged pace, approximate catch-up: {laps_to_catch:.1f} laps (not guaranteed).")
-                if laps_to_catch < remaining and wear_ratio < .72:
-                    messages.append("You are catching the car ahead. Keep your current pace rather than taking unnecessary risks.")
-            elif gain < -0.08:
-                details.append(f"Ahead: {ahead['name']} +{gap:.2f}s; they are faster by approximately {-gain:.2f}s/lap.")
-                messages.append("The car ahead has been faster recently. An alternative tire strategy may help.")
+@st.cache_data(ttl=86400, show_spinner=False)
+def h2h(pid, bid, year):
+    try:
+        data=fetch(f'people/{pid}/stats',{'stats':'vsPlayer','group':'pitching','season':year,'opposingPlayerId':bid,'gameType':'R'})
+        for sec in data.get('stats',[]):
+            for split in sec.get('splits',[]):
+                opp=split.get('opponent') or split.get('player') or {}
+                if str(opp.get('id'))==str(bid) and split.get('stat'):
+                    return split['stat']
+    except (requests.RequestException, KeyError, ValueError): pass
+    return None
+
+
+def starting_game(data, starter, mode):
+    staff=data['staff']
+    return dict(year=data['year'],team=data['team'],opponent=data['opponent'],staff=staff,
+      lineup=data['hitters'][:9].copy(),bench=data['hitters'][9:].copy(),pitcher=starter,
+      used=[starter],pitches={p['id']:0 for p in staff},faced={p['id']:0 for p in staff},
+      appearance=0,entry_inning=1,warming={},ready=[],inning=1,outs=0,runs=0,
+      hits=0,walks=0,bases=[False]*3,spot=0,finished=False,mode=mode,
+      log=['PLAY BALL!'],decisions=[],strategy_log=[],strikeouts=0,double_plays=0,
+      intentional_walks=0,last_play='Game begins!',play_result='',play_detail='',play_runs=0,
+      prior_bases=[False]*3,play_serial=0,highlights=[],achievements=[],
+      inning_start_runs=0,inning_reliever=False,jam_escaped=False,
+      relief_scoreless=0,relief_inning_outs=0,career_id=str(uuid4()),career_saved=False,
+      scouting=data.get('scouting',{}),confidence={x['id']:70 for x in staff},
+      mound_visits=5,visit_boost={x['id']:0 for x in staff},confidence_events=[])
+
+
+def pitcher(g): return next(p for p in g['staff'] if p['id']==g['pitcher'])
+def batter(g): return g['lineup'][g['spot']%9]
+
+
+def pitcher_limit(p, mode):
+    s=p['stats']; starts=number(s.get('gamesStarted')); ip=number(s.get('inningsPitched'))
+    if p['role']=='SP': limit=bounded(ip/max(1,starts)*18 if starts else 105,85,140)
+    else: limit=bounded(ip/max(1,number(s.get('gamesPlayed'))-starts)*23,20,48)
+    return limit*(1.35 if mode=='Rookie' else .90 if mode=='Hall of Fame' else 1)
+
+
+def fatigue(g,p): return g['pitches'][p['id']]/pitcher_limit(p,g['mode'])
+def pitcher_confidence(g,p):
+    return g.get('confidence',{}).get(p['id'],70)
+
+
+def mound_visit(g):
+    if g['finished'] or g.get('mound_visits',0)<=0:
+        return False
+    p=pitcher(g)
+    g['mound_visits']-=1
+    before=pitcher_confidence(g,p)
+    g['confidence'][p['id']]=min(95,before+12)
+    g['visit_boost'][p['id']]=2
+    event=f"Mound visit to {p['name']} in inning {g['inning']}: confidence {before} to {g['confidence'][p['id']]}"
+    g['confidence_events'].append(event)
+    g['log'].append('🧢 '+event)
+    return True
+
+
+def update_confidence(g,p,result,runs):
+    adjustment={'strikes out':6,'grounds into a DOUBLE PLAY':9,
+       'walks':-6,'singles':-5,'DOUBLES':-9,'TRIPLES':-12,
+       'HOMERS':-16}.get(result,3)
+    adjustment-=min(12,runs*5)
+    pid=p['id']
+    g['confidence'][pid]=int(bounded(pitcher_confidence(g,p)+adjustment,15,95))
+    g['visit_boost'][pid]=max(0,g['visit_boost'].get(pid,0)-1)
+
+
+def legal_change(g): return not g['finished'] and (g['appearance']>=3 or g['inning']>g['entry_inning'])
+
+
+def warm(g,pid):
+    if pid in g['used'] or pid in g['ready'] or pid in g['warming']: return
+    g['warming'][pid]=0
+    p=next(x for x in g['staff'] if x['id']==pid)
+    g['log'].append(f"🔥 {p['name']} begins warming.")
+
+
+def warm_tick(g):
+    for pid in list(g['warming']):
+        g['warming'][pid]+=1
+        if g['warming'][pid]>=2:
+            del g['warming'][pid]; g['ready'].append(pid)
+            g['log'].append(f"✅ {next(p['name'] for p in g['staff'] if p['id']==pid)} is ready.")
+
+
+def batter_hit_rates(h):
+    s=h['stats']; hits=number(s.get('hits')); ab=number(s.get('atBats'))
+    avg=hits/ab if ab else number(s.get('avg'),.250)
+    doubles=number(s.get('doubles')); triples=number(s.get('triples')); hr=number(s.get('homeRuns'))
+    single=max(0,hits-doubles-triples-hr)
+    return bounded(avg,.08,.45), [single,doubles,triples,hr] if hits else [70,19,2,9]
+
+
+def estimate(g,p,h,approach='Balanced',defense='Normal'):
+    """Educational outcome model informed by actual available L/R splits."""
+    ps=p['stats']; bf=max(1,number(ps.get('battersFaced'),1))
+    avg,_=batter_hit_rates(h)
+    actual_h=observed_batting_split(h,p['throws'],g['year'])
+    split_ab=number(actual_h.get('atBats')) if actual_h else 0
+    if split_ab >= 1:
+        # Blend sample-size-sensitive observed split with season rate.
+        # Avoid equating 5 AB and 400 AB evidence.
+        observed_avg=number(actual_h.get('hits'))/split_ab
+        weight=split_ab/(split_ab+90)
+        avg=weight*observed_avg+(1-weight)*avg
+        hand_adjust=0
+    else:
+        hand_adjust=-.017 if h['bats']==p['throws'] and h['bats'] in ('L','R') else .010
+
+    tired=max(0,fatigue(g,p)-.65)
+    pitching_split=observed_pitching_split(p,h['bats'],g['year'])
+    if pitching_split and number(pitching_split.get('battersFaced')) >= 1:
+        split_bf=max(1,number(pitching_split.get('battersFaced')))
+        split_k=number(pitching_split.get('strikeOuts'))/split_bf
+        split_bb=number(pitching_split.get('baseOnBalls'))/split_bf
+        season_k=number(ps.get('strikeOuts'))/bf
+        season_bb=number(ps.get('baseOnBalls'))/bf
+        w=split_bf/(split_bf+90)
+        k_rate=w*split_k+(1-w)*season_k
+        bb_rate=w*split_bb+(1-w)*season_bb
+        # Pitching splits modify strikeout and walk rates, not a
+        # fabricated per-batter head-to-head probability.
+    else:
+        k_rate=number(ps.get('strikeOuts'))/bf
+        bb_rate=number(ps.get('baseOnBalls'))/bf
+    hp=bounded(avg+hand_adjust+(number(ps.get('whip'),1.3)-1.3)*.045+(number(ps.get('era'),4.2)-4.2)*.006+tired*.065,.08,.48)
+    wp=bounded(bb_rate+tired*.03,.025,.18)
+    kp=bounded(k_rate-tired*.03,.06,.40)
+    if approach=='Attack the zone': hp*=1.12;wp*=.70;kp*=1.20
+    elif approach=='Pitch carefully': hp*=.88;wp*=1.70;kp*=.82
+    if defense=='Infield in' and g['bases'][2] and g['outs']<2: hp*=1.13
+    if defense=='Double-play depth' and g['bases'][0] and g['outs']<2: hp*=1.04
+    # Confidence is a clearly simulated effect, separate from workload fatigue.
+    confidence=pitcher_confidence(g,p) if p['id']==g['pitcher'] else 70
+    confidence_shift=(confidence-70)/100
+    hp*=1-.12*confidence_shift
+    wp*=1-.24*confidence_shift
+    kp*=1+.15*confidence_shift
+    if p['id']==g['pitcher'] and g.get('visit_boost',{}).get(p['id'],0)>0:
+        wp*=.88
+        hp*=.97
+    hp=bounded(hp,.04,.58);wp=bounded(wp,.01,.32);kp=bounded(kp,.02,max(.02,1-hp-wp))
+    return hp,wp,kp
+
+
+def next_hitters(g): return [g['lineup'][(g['spot']+i)%9] for i in range(3)]
+
+
+def compare_pitchers(g):
+    hitters=next_hitters(g)
+    options=[pitcher(g)]+[p for p in g['staff'] if p['id'] not in g['used']]
+    result=[]
+    for p in options:
+        probabilities=[estimate(g,p,h) for h in hitters]
+        avg_hit=sum(x[0] for x in probabilities)/3
+        avg_walk=sum(x[1] for x in probabilities)/3
+        avg_k=sum(x[2] for x in probabilities)/3
+        # Classroom proxy only. A low value favors run prevention.
+        risk=avg_hit+0.7*avg_walk-0.22*avg_k
+        pid=p['id']
+        state=('ON MOUND' if pid==g['pitcher'] else 'READY' if pid in g['ready']
+               else 'WARMING' if pid in g['warming'] else 'COLD')
+        result.append(dict(ID=pid,Pitcher=p['name'],Role=p['role'],Hand=throwing(p['throws']),
+          Status=state,ERA=p['stats'].get('era','—'),WHIP=p['stats'].get('whip','—'),
+          **{'Hit %':round(avg_hit*100,1),'Walk %':round(avg_walk*100,1),
+             'K %':round(avg_k*100,1),'Risk proxy':round(risk*100,1)}))
+    return sorted(result,key=lambda r:r['Risk proxy'])
+
+
+def bring_in(g,pid,reason):
+    if not legal_change(g) or pid not in g['ready']: return
+    old=pitcher(g); new=next(x for x in g['staff'] if x['id']==pid)
+    comparisons=compare_pitchers(g)
+    old_risk=next(r['Risk proxy'] for r in comparisons if r['ID']==old['id'])
+    new_risk=next(r['Risk proxy'] for r in comparisons if r['ID']==pid)
+    g['decisions'].append(dict(Inning=g['inning'],Outs=g['outs'],Out=old['name'],In=new['name'],
+      Hand=throwing(new['throws']),Reason=reason,**{'Old risk':old_risk,'New risk':new_risk,
+      'Improved proxy':new_risk<old_risk,'Fatigue at change':round(fatigue(g,old)*100)}))
+    g['pitcher']=pid;g['used'].append(pid);g['ready'].remove(pid);g['appearance']=0;g['entry_inning']=g['inning']
+    g['log'].append(f"🔁 {new['name']} ({throwing(new['throws'])}) replaces {old['name']}.")
+    g['inning_reliever']=True
+    if new_risk < old_risk and 'Matchup Master' not in g['achievements']:
+        g['achievements'].append('Matchup Master')
+
+
+def pinch_hit(g):
+    if g['inning']<7 or not g['bench'] or not (any(g['bases']) or g['inning']>=8):return
+    ix=g['spot']%9; old=g['lineup'][ix]; current=pitcher(g)
+    replacement=min(g['bench'],key=lambda h:estimate(g,current,h)[0]*-1)
+    if estimate(g,current,replacement)[0]>estimate(g,current,old)[0]+.035:
+        g['lineup'][ix]=replacement;g['bench'].remove(replacement)
+        g['log'].append(f"📣 PINCH HITTER: {replacement['name']} replaces {old['name']}!")
+
+
+def advance_hit(g,distance):
+    old=g['bases'];new=[False]*3;runs=0
+    if distance==4:runs=1+sum(old)
+    else:
+        # Process lead runners first; use a conservative fallback if a base is occupied.
+        for i in (2,1,0):
+            if not old[i]:continue
+            advance=distance
+            if distance==1 and i==1 and random.random()<(.72 if g['outs']==2 else .50): advance=2
+            if distance==1 and i==0 and random.random()<.23: advance=2
+            dest=i+advance
+            if dest>=3:runs+=1
             else:
-                details.append(f"Ahead: {ahead['name']} +{gap:.2f}s; recent pace is nearly equal.")
-    if behind and my_pace is not None:
-        gap = behind["elapsed"] - driver["elapsed"]
-        rival_pace = recent_pace(behind)
-        if rival_pace is not None:
-            close_rate = my_pace - rival_pace
-            if close_rate > .08:
-                laps_until = gap / close_rate
-                details.append(f"Behind: {behind['name']} +{gap:.2f}s; closing ~{close_rate:.2f}s/lap.")
-                if laps_until <= min(remaining, 4) and wear_ratio < .7:
-                    messages.append(f"The car behind could catch you in about {laps_until:.1f} laps if pace stays constant.")
-                    recommendation = "Push"
-            else:
-                details.append(f"Behind: {behind['name']} +{gap:.2f}s; not closing quickly on current pace.")
-    if g["weather"] == "Wet" and driver["tire"] in DRY:
-        urgent = True
-        pit_advice = "Wet"
-        messages.insert(0, "Heavy rain with dry tires: a wet-weather compound is strongly favored.")
-    elif g["weather"] == "Damp" and driver["tire"] in DRY and wear_ratio >= .5:
-        pit_advice = "Intermediate"
-        messages.insert(0, "The track is damp; intermediates may be worth considering if conditions persist.")
-    elif g["weather"] == "Dry" and driver["tire"] not in DRY:
-        urgent = True
-        pit_advice = "Medium" if remaining <= expected_life(g, "Medium") else "Hard"
-        messages.insert(0, "Dry weather is making wet-weather tires costly. Consider switching to slicks.")
-    elif wear_ratio >= .95 and remaining > 1:
-        urgent = True
-        pit_advice = "Medium" if remaining <= expected_life(g, "Medium") else "Hard"
-        messages.insert(0, "Tires have exceeded most of their expected useful life. Plan a stop.")
-    elif wear_ratio >= .76 and remaining >= 3:
-        recommendation = "Conserve"
-        messages.insert(0, "Tire wear is high. Conserve pace while deciding whether a pit stop pays off.")
-    if not g["was_wet"] and len(set(driver["used"]) & DRY) < 2:
-        next_dry = "Hard" if driver["tire"] != "Hard" else "Medium"
-        if remaining <= 3:
-            urgent = True
-            pit_advice = next_dry
-            messages.insert(0, f"Dry-tire compound requirement: use {next_dry} before finishing.")
-        else:
-            details.append("Dry race: you still need a second dry compound.")
-    if not messages:
-        messages.append("No urgent threat detected. Focus on consistent laps and monitor gaps.")
+                while dest<3 and new[dest]:dest+=1
+                if dest>=3:runs+=1
+                else:new[dest]=True
+        new[distance-1]=True
+    g['bases']=new;g['runs']+=runs;return runs
+
+
+def walk_bases(g):
+    a,b,c=g['bases'];score=int(a and b and c)
+    g['bases']=[True,a or b,c or (a and b)];g['runs']+=score;g['walks']+=1
+    return score
+
+
+def after_batter(g):
+    g['spot']+=1;warm_tick(g)
+    g['play_serial']+=1
+    if g['outs']>=3:
+        g['log'].append(f"End of inning {g['inning']} — {g['runs']} runs allowed.")
+        if g.get('jam_escaped') and g['runs']==g['inning_start_runs'] and 'Escape Artist' not in g['achievements']:
+            g['achievements'].append('Escape Artist')
+            g['highlights'].append('ESCAPE ARTIST: escaped a scoring-position jam!')
+        if g.get('inning_reliever') and g['runs']==g['inning_start_runs']:
+            g['relief_scoreless']+=1
+            if g['relief_scoreless']>=3 and 'Bullpen Lockdown' not in g['achievements']:
+                g['achievements'].append('Bullpen Lockdown')
+        elif g['runs']>g['inning_start_runs']:
+            g['relief_scoreless']=0
+        g['outs']=0;g['bases']=[False]*3;g['inning']+=1
+        g['inning_start_runs']=g['runs'];g['inning_reliever']=(pitcher(g)['role']=='RP')
+        g['jam_escaped']=False
+    if g['inning']>9:
+        g['finished']=True
+        if g['runs']==0 and 'Shutout Legend' not in g['achievements']:
+            g['achievements'].append('Shutout Legend')
+
+
+def intentional_walk(g):
+    if g['finished'] or all(g['bases']):return
+    g['prior_bases']=g['bases'].copy()
+    p=pitcher(g);h=batter(g);scored=walk_bases(g)
+    g['faced'][p['id']]+=1;g['appearance']+=1;g['intentional_walks']+=1
+    g['strategy_log'].append(dict(Inning=g['inning'],Batter=h['name'],Pitcher=p['name'],
+      Approach='Intentional walk',Defense='—',**{'Hit %':'—','Walk %':100}))
+    g['play_result']='INTENTIONAL WALK';g['play_detail']=f"{h['name']} takes first base";g['play_runs']=scored
+    g['last_play']=f"{p['name']} intentionally walks {h['name']}."+(' A run scores!' if scored else '')
+    g['log'].append(g['last_play']);after_batter(g)
+
+
+def simulate(g,approach,defense):
+    if g['finished']:return
+    g['prior_bases']=g['bases'].copy()
+    pinch_hit(g);p=pitcher(g);h=batter(g)
+    if (g['bases'][1] or g['bases'][2]) and g['outs']<=2:
+        g['jam_escaped']=True
+    hp,wp,kp=estimate(g,p,h,approach,defense)
+    g['strategy_log'].append(dict(Inning=g['inning'],Batter=h['name'],Pitcher=p['name'],
+      Approach=approach,Defense=defense,**{'Hit %':round(hp*100,1),'Walk %':round(wp*100,1)}))
+    roll=random.random();runs=0
+    if roll<wp:runs=walk_bases(g);result='walks'
+    elif roll<wp+hp:
+        _,weights=batter_hit_rates(h);distance=random.choices([1,2,3,4],weights=weights,k=1)[0]
+        runs=advance_hit(g,distance);g['hits']+=1
+        result={1:'singles',2:'DOUBLES',3:'TRIPLES',4:'HOMERS'}[distance]
+    elif roll<wp+hp+kp:g['outs']+=1;g['strikeouts']+=1;result='strikes out'
+    else:
+        if g['bases'][0] and g['outs']<2 and random.random()<(.27 if defense=='Double-play depth' else .11 if defense=='Infield in' else .16):
+            g['outs']+=2;g['double_plays']+=1;g['bases'][0]=False;result='grounds into a DOUBLE PLAY'
+        elif g['bases'][2] and g['outs']<2 and random.random()<(.04 if defense=='Infield in' else .17):
+            g['outs']+=1;g['bases'][2]=False;g['runs']+=1;runs=1;result='hits a sacrifice fly'
+        else:g['outs']+=1;result='is retired on a ball in play'
+    pitches=random.randint(4,9) if approach=='Pitch carefully' else random.randint(2,6) if approach=='Attack the zone' else random.randint(3,8)
+    g['pitches'][p['id']]+=pitches;g['faced'][p['id']]+=1;g['appearance']+=1
+    update_confidence(g,p,result,runs)
+    g['play_result']={'walks':'WALK','singles':'SINGLE','DOUBLES':'DOUBLE','TRIPLES':'TRIPLE','HOMERS':'HOME RUN!','strikes out':'STRIKEOUT','grounds into a DOUBLE PLAY':'DOUBLE PLAY','hits a sacrifice fly':'SAC FLY','is retired on a ball in play':'OUT'}.get(result,'OUT')
+    g['play_detail']=f"{h['name']} vs. {p['name']}";g['play_runs']=runs
+    g['last_play']=f"Inning {g['inning']}: {h['name']} {result} vs. {p['name']} ({pitches} pitches)."+(f' {runs} run(s) score!' if runs else '')
+    g['log'].append(g['last_play'])
+    if g['play_result'] in ('HOME RUN!','TRIPLE','DOUBLE','STRIKEOUT','DOUBLE PLAY'):
+        g['highlights'].append(g['last_play'])
+    after_batter(g)
+
+
+def danger(g):
+    if g['finished']:return None
+    if all(g['bases']):return '🚨 BASES LOADED'
+    if g['bases'][1] or g['bases'][2]:return '⚠️ RUNNERS IN SCORING POSITION'
+    if g['inning']>=7 and any(g['bases']):return '🔥 LATE-INNING PRESSURE'
+    if fatigue(g,pitcher(g))>.90:return '🔋 FATIGUE WARNING'
+    return None
+
+
+def diamond(g):
+    def marker(x, y, occupied):
+        fill = '#ffb33d' if occupied else '#f5e8c9'
+        halo = '<circle cx="%s" cy="%s" r="20" fill="#ffb33d" opacity=".2"/>' % (x,y) if occupied else ''
+        return halo + f'<rect x="{x-10}" y="{y-10}" width="20" height="20" transform="rotate(45 {x} {y})" fill="{fill}" stroke="#153c35" stroke-width="2"/>'
+    a,b,c=g['bases']
+    previous=g.get('prior_bases',[False,False,False])
+    points=[(428,177),(275,66),(122,177)]
+    # Visual animation approximates runner progress between previous and current occupied bases.
+    runner_trails=''
+    if g.get('play_result') in ('SINGLE','DOUBLE','TRIPLE','HOME RUN!','WALK','INTENTIONAL WALK'):
+        incoming=[points[i] for i,occupied in enumerate(previous) if occupied]
+        incoming.append((275,324))
+        destinations=[points[i] for i,occupied in enumerate(g['bases']) if occupied]
+        destinations += [(275,324)]*(max(0,len(incoming)-len(destinations)))
+        for ix,(x,y) in enumerate(incoming):
+            tx,ty=destinations[min(ix,len(destinations)-1)]
+            runner_trails+=(f'<circle class="moving-runner" cx="{x}" cy="{y}" r="8" fill="#ffbd4e" '
+                f'style="--dx:{tx-x}px;--dy:{ty-y}px;animation-delay:{ix*0.13}s"/>')
+    headline=escape(g.get('play_result',''))
+    detail=escape(g.get('play_detail',''))
+    runs=g.get('play_runs',0)
+    ribbon=f'<div class="score">+{runs} RUNS</div>' if runs else ''
+    result=(f'<div class="result"><div class="broadcast-tag">⚾ LAST PLAY</div><div class="big">{headline}</div><div class="detail">{detail}</div>{ribbon}</div>') if headline else ''
+    hit_result=g.get('play_result','')
+    fly_ball=hit_result in ('SINGLE','DOUBLE','TRIPLE','HOME RUN!')
+    ball_effect='<div class="ball-flight">⚾</div>' if fly_ball else ''
+    result+=ball_effect
+    result=result.replace('class="result"', f'class="result {"home-run" if headline=="HOME RUN!" else ""}"')
+    html=f"""<html><head><style>
+    *{{box-sizing:border-box}}body{{margin:0;background:transparent;font-family:Arial,sans-serif;overflow:hidden}}
+    .stadium{{position:relative;width:100%;height:310px;overflow:hidden;border-radius:16px;background:#092c29}}
+    svg{{width:100%;height:100%;display:block}}
+    .result{{position:absolute;left:50%;top:54%;transform:translate(-50%,-50%);width:87%;background:rgba(6,22,35,.92);border:3px solid #ffb139;border-radius:16px;padding:17px;text-align:center;box-shadow:0 15px 30px #0009;animation:pop .38s ease-out, fadeAway .35s ease-in 3.2s forwards}}
+    .broadcast-tag{{color:#ffb33d;font:800 10px Arial;letter-spacing:2px;margin-bottom:6px}}
+    .moving-runner{{filter:drop-shadow(0px 1px 3px #000);animation:runbase 1.45s ease-in-out both;transform-box:fill-box;transform-origin:center}}
+    @keyframes runbase{{0%{{opacity:0;transform:translate(0,0) scale(.6)}}20%{{opacity:1}}85%{{opacity:1}}100%{{opacity:0;transform:translate(var(--dx),var(--dy)) scale(.8)}}}}
+    .home-run{{border-color:#ffe06c;box-shadow:0 0 45px #e69e2699;animation:pop .38s ease-out,fadeAway .35s ease-in 3.2s forwards}}
+    .ball-flight{{position:absolute;left:48%;top:73%;font-size:26px;pointer-events:none;opacity:0;animation:flight 1.8s ease-in-out .15s forwards}}
+    @keyframes flight{{0%{{opacity:0;transform:translate(0,0) scale(.5)}}20%{{opacity:.9}}90%{{opacity:.7}}100%{{opacity:0;transform:translate(105px,-185px) scale(.25)}}}}
+    @keyframes fadeAway{{to{{opacity:0;visibility:hidden}}}}
+    .big{{font:900 clamp(27px,5vw,52px) Arial;color:#fff;letter-spacing:1.5px;text-shadow:0 3px 5px #000}}
+    .detail{{font:14px Arial;color:#f3dbaf;margin-top:6px}}.score{{font:900 21px Arial;color:#ffb139;margin-top:8px}}
+    @keyframes pop{{from{{opacity:0;transform:translate(-50%,-50%) scale(.8)}}to{{opacity:1;transform:translate(-50%,-50%) scale(1)}}}}
+    </style></head><body><div class="stadium">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 550 360" preserveAspectRatio="xMidYMid meet">
+      <defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="#082439"/><stop offset="1" stop-color="#145039"/></linearGradient>
+      <pattern id="grass" width="48" height="48" patternUnits="userSpaceOnUse" patternTransform="rotate(23)"><rect width="48" height="48" fill="#236b48"/><rect width="24" height="48" fill="#2e7c52"/></pattern></defs>
+      <rect width="550" height="360" fill="url(#sky)"/>
+      <path d="M0 75 Q275 -18 550 75 L550 360 L0 360Z" fill="url(#grass)"/>
+      <path d="M0 75 Q275 -18 550 75" stroke="#e6bf64" stroke-width="7" fill="none"/>
+      <path d="M275 330 L86 177 L275 35 L464 177 Z" fill="#c58b55" stroke="#f3d6a6" stroke-width="3"/>
+      <path d="M275 296 L122 177 L275 66 L428 177 Z" fill="#287247"/>
+      <path d="M275 330 L8 110 M275 330 L542 110" stroke="#f6eed9" stroke-width="2"/>
+      {marker(428,177,a)}{marker(275,66,b)}{marker(122,177,c)}{marker(275,324,False)}{runner_trails}
+      <ellipse cx="275" cy="199" rx="22" ry="13" fill="#c99a69"/>
+      <rect x="266" y="197" width="18" height="5" rx="2" fill="#fff"/>
+      <text x="15" y="24" fill="#ffcb80" font-size="15" font-weight="800">SPORTS BY THE NUMBERS</text>
+      <text x="15" y="46" fill="#fff" font-size="12">SHUTOUT CHALLENGE • LIVE</text>
+      <text x="535" y="24" text-anchor="end" fill="#fff" font-size="13">ORANGE = RUNNER ON BASE</text>
+    </svg>{result}</div></body></html>"""
+    components.html(html,height=316,scrolling=False)
+
+def player_headshot(pid):
+    # Official MLB image CDN; missing photos are hidden by the browser.
+    return f"https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_auto:good/v1/people/{int(pid)}/headshot/67/current"
+
+
+def portrait_card(p, kicker, subline=''):
+    src=player_headshot(p['id'])
+    return (f'<div class="face-card"><img src="{src}" alt="" onerror="this.style.display=\'none\'"/>'
+            f'<div><div class="face-kicker">{escape(kicker)}</div>'
+            f'<div class="face-name">{escape(p["name"])}</div>'
+            f'<div class="face-sub">{escape(subline)}</div></div></div>')
+
+
+def report_grade(g):
+    changes=g['decisions']; evidence=sum(1 for x in changes if x['Improved proxy'])
+    timing=sum(1 for x in changes if x['Fatigue at change']<=110)
+    # Score never penalizes a well-founded decision solely for the random resulting hit.
+    decision_score=round(100*(.5*evidence/max(1,len(changes))+.3*timing/max(1,len(changes))+.2*min(1,len(g['strategy_log'])/27))) if changes else round(20*min(1,len(g['strategy_log'])/27))
+    return bounded(decision_score,0,100)
+
+
+
+# ==========================================
+# CAREER MODE AND PDF REPORT
+# ==========================================
+
+def clean_manager_name(name):
+    return (str(name).strip()[:45] or 'Manager')
+
+
+def grade_letter(score):
+    return 'A' if score >= 90 else 'B' if score >= 80 else 'C' if score >= 70 else 'D' if score >= 60 else 'F'
+
+
+def manager_assessment(g):
+    """Transparent classroom rubric: decisions matter more than simulated luck."""
+    changes = g.get('decisions', [])
+    actions = g.get('strategy_log', [])
+    total_pa = max(1, len(actions))
+    meaningful = sum(1 for a in actions if a.get('Approach') not in ('Balanced', None) or a.get('Defense') not in ('Normal', None, '—'))
+    # Strategy choices are evidence of active management, not automatically 'correct'.
+    engagement = min(20, round(16 * min(1, total_pa / 27) + 4 * min(1, meaningful / 6)))
+    # No bullpen change is not automatically a failure; baseline credit applies.
+    if changes:
+        good_matchups = sum(bool(x.get('Improved proxy')) for x in changes)
+        timely = sum(number(x.get('Fatigue at change')) <= 110 for x in changes)
+        bullpen = round(10 + 12 * good_matchups / len(changes) + 8 * timely / len(changes))
+    else:
+        bullpen = 24
+    bullpen = min(30, bullpen)
+    # Recognize reading the situation, without claiming to judge intent from a dropdown.
+    dangerous_actions = sum(1 for a in actions if a.get('Approach') in ('Pitch carefully', 'Attack the zone', 'Intentional walk') or a.get('Defense') in ('Infield in','Double-play depth'))
+    strategy = min(30, round(18 + 12 * min(1, dangerous_actions / 7)))
+    # Runs permitted carry only 20% of the final score.
+    outcome = max(0, 20 - min(20, int(g.get('runs',0)) * 3))
+    parts = {'Engagement': engagement, 'Bullpen decisions': bullpen,
+             'Situational strategy': strategy, 'Run prevention': outcome}
+    score = min(100, max(0, sum(parts.values())))
+    notes = []
+    if not changes:
+        notes.append('No pitching changes: the rubric awards baseline bullpen credit instead of assuming a mistake.')
+    elif any(x.get('Improved proxy') for x in changes):
+        notes.append('At least one pitching change improved the modelled matchup-risk index.')
+    else:
+        notes.append('Pitching changes did not lower the modelled matchup-risk index; discuss the reasons for those choices.')
+    if g.get('runs',0) == 0:
+        notes.append('Shutout achieved. Remember: a good decision can still lead to a hit, and luck matters.')
+    else:
+        notes.append('Runs allowed affect just 20% of the grade, so decisions matter more than random results.')
+    scout=g.get('scouting',{})
+    if scout:
+        threats=set(scout.get('threat_ids',[]))
+        top_three={x['id'] for x in sorted(g['lineup'],key=lambda x:(number(x['stats'].get('ops')),number(x['stats'].get('homeRuns'))),reverse=True)[:3]}
+        overlap=len(threats & top_three)
+        notes.append(f"Pregame scouting: {overlap} of 3 selected threats matched the top three lineup hitters by the selected statistical ranking. This is feedback, not a guarantee of game outcomes.")
+        notes.append(f"Pregame plan: {scout.get('plan','Not recorded')}. Mound visits used: {5-g.get('mound_visits',5)}.")
+    return {'score':score,'letter':grade_letter(score),'parts':parts,'notes':notes}
+
+
+def career_record(g, name):
+    assessment = manager_assessment(g)
     return {
-        "headline": "Pit wall alert" if urgent else "Strategy briefing",
-        "reason": messages[0],
-        "recommendation": recommendation,
-        "pit": pit_advice,
-        "details": details + messages[1:],
-        "severity": "warning" if urgent else "info",
+        'id':g.get('career_id') or str(uuid4()),
+        'date_utc':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'),
+        'manager':clean_manager_name(name), 'season':int(g['year']),
+        'team':str(g['team']), 'opponent':str(g['opponent']),
+        'difficulty':str(g['mode']), 'runs':int(g['runs']),
+        'hits':int(g['hits']), 'strikeouts':int(g['strikeouts']),
+        'shutout':g['runs']==0,
+        'grade':assessment['score'], 'letter':assessment['letter'],
+        'rubric':assessment['parts'],
+        'achievements':list(g.get('achievements',[])),
+        'pitching_changes':len(g.get('decisions',[])),
+        'strategies':len(g.get('strategy_log',[])),
+        'scouting':g.get('scouting',{}),'mound_visits_used':5-g.get('mound_visits',5)
     }
 
 
-def make_pdf_report(g, finishing_position, grade, reflection=""):
-    """Create a one-page printable classroom race report in memory."""
-    buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=(612, 792))
-    dark = HexColor("#17253B")
-    orange = HexColor("#E9762D")
-    gray = HexColor("#5B6677")
-    pdf.setFillColor(dark)
-    pdf.rect(0, 712, 612, 80, fill=1, stroke=0)
-    pdf.setFillColor(HexColor("#FFFFFF"))
-    pdf.setFont("Helvetica-Bold", 22)
-    pdf.drawString(42, 752, "F1: THE PIT WALL")
-    pdf.setFont("Helvetica", 11)
-    pdf.drawString(42, 730, "SPORTS BY THE NUMBERS  |  RACE STRATEGY REPORT")
-    pdf.setFillColor(dark)
-    pdf.setFont("Helvetica-Bold", 14)
-    pdf.drawString(42, 685, f"Driver: {g['player']}")
-    pdf.setFont("Helvetica", 11)
-    pdf.drawString(42, 663, f"Circuit: {g['track']}   |   Laps: {g['lap']}   |   Finish: P{finishing_position}")
-    pdf.drawString(42, 643, f"Strategy score: {grade}/100   |   Stops: {you(g)['stops']}")
-    pdf.setStrokeColor(orange)
-    pdf.line(42, 625, 570, 625)
-    pdf.setFont("Helvetica-Bold", 14)
-    pdf.drawString(42, 602, "RACE START")
-    pdf.setFont("Helvetica", 11)
-    reaction = g.get('launch_reaction')
-    pdf.drawString(42, 582, f"Reaction: {reaction:.3f} seconds" if reaction is not None else "Reaction: not recorded")
-    delay = g.get('start_delay', 0)
-    pdf.drawString(42, 564, f"Start adjustment: {delay:+.2f} seconds (negative = bonus)")
-    result = g.get('launch_result') or 'Not recorded'
-    pdf.drawString(42, 546, result[:85])
-    times = [float(e['Time']) for e in g['entries']]
-    pdf.setFont("Helvetica-Bold", 14)
-    pdf.drawString(42, 511, "LAP-TIME INVESTIGATION")
-    pdf.setFont("Helvetica", 11)
-    if times:
-        pdf.drawString(42, 490, f"Mean: {mean(times):.2f}s     Median: {median(times):.2f}s     Range: {max(times)-min(times):.2f}s")
-        pdf.drawString(42, 471, f"Fastest: {min(times):.2f}s     Slowest: {max(times):.2f}s")
+def career_stats(records):
+    if not records:
+        return {'Games':0,'Shutouts':0,'Avg grade':'—','Best grade':'—'}
+    return {'Games':len(records),
+            'Shutouts':sum(bool(x.get('shutout')) for x in records),
+            'Avg grade':f"{sum(int(x.get('grade',0)) for x in records)/len(records):.1f}",
+            'Best grade':max(int(x.get('grade',0)) for x in records)}
+
+
+def pdf_escape(value):
+    return escape(str(value))
+
+
+def make_game_pdf(g, name):
+    assessment = manager_assessment(g)
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf,pagesize=(612,792),rightMargin=38,leftMargin=38,
+                            topMargin=38,bottomMargin=38)
+    styles=getSampleStyleSheet()
+    styles.add(ParagraphStyle(name='Brand',parent=styles['Heading1'],fontName='Helvetica-Bold',
+                              fontSize=19,leading=23,textColor=colors.HexColor('#E67727'),spaceAfter=5))
+    styles.add(ParagraphStyle(name='SmallCustom',parent=styles['Normal'],fontSize=9,leading=13,spaceAfter=6))
+    styles.add(ParagraphStyle(name='SubtitleCustom',parent=styles['Heading2'],fontSize=12,
+                              textColor=colors.HexColor('#14374A'),spaceBefore=10,spaceAfter=7))
+    story=[Paragraph('SPORTS BY THE NUMBERS | MANAGER REPORT',styles['Brand']),
+           Paragraph(f"Manager: <b>{pdf_escape(clean_manager_name(name))}</b>  |  "
+                     f"Game: <b>{pdf_escape(g['year'])} {pdf_escape(g['team'])} vs. {pdf_escape(g['opponent'])}</b>  |  "
+                     f"Mode: {pdf_escape(g['mode'])}",styles['SmallCustom']),
+           Spacer(1,8)]
+    header=Table([[f"{assessment['score']}/100", f"GRADE {assessment['letter']}",
+                   'SHUTOUT' if g['runs']==0 else f"{g['runs']} RUNS ALLOWED"]],
+                 colWidths=[170,170,170],rowHeights=[44])
+    header.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),colors.HexColor('#14374A')),
+                                ('TEXTCOLOR',(0,0),(-1,-1),colors.white),
+                                ('FONTNAME',(0,0),(-1,-1),'Helvetica-Bold'),
+                                ('FONTSIZE',(0,0),(-1,-1),14),
+                                ('ALIGN',(0,0),(-1,-1),'CENTER'),
+                                ('VALIGN',(0,0),(-1,-1),'MIDDLE')]))
+    story += [header,Spacer(1,12),Paragraph('How the grade was calculated',styles['SubtitleCustom'])]
+    rubric=[['Category','Points earned','Maximum']]
+    for k,v in assessment['parts'].items():
+        rubric.append([k,str(v),str({'Engagement':20,'Bullpen decisions':30,
+                                     'Situational strategy':30,'Run prevention':20}[k])])
+    t=Table(rubric,colWidths=[280,115,115],hAlign='LEFT')
+    t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#E7EEF2')),
+                           ('GRID',(0,0),(-1,-1),.35,colors.HexColor('#B3C5CC')),
+                           ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+                           ('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.white,colors.HexColor('#F8FAFB')]),
+                           ('TOPPADDING',(0,0),(-1,-1),6),('BOTTOMPADDING',(0,0),(-1,-1),6)]))
+    story += [t,Spacer(1,8)]
+    for note in assessment['notes']:
+        story.append(Paragraph('• '+pdf_escape(note),styles['SmallCustom']))
+    scout=g.get('scouting',{})
+    if scout:
+        story.append(Paragraph('Pregame scouting plan',styles['SubtitleCustom']))
+        story.append(Paragraph('Plan: '+pdf_escape(scout.get('plan','Not recorded')),styles['SmallCustom']))
+        names={p['id']:p['name'] for p in g['lineup']}
+        selected=', '.join(names.get(pid,str(pid)) for pid in scout.get('threat_ids',[]))
+        story.append(Paragraph('Selected threats: '+pdf_escape(selected),styles['SmallCustom']))
+        story.append(Paragraph('Starter rationale: '+pdf_escape(scout.get('rationale','')),styles['SmallCustom']))
+        story.append(Paragraph(f"Mound visits used: {5-g.get('mound_visits',5)}",styles['SmallCustom']))
+    story += [Paragraph('Game statistics',styles['SubtitleCustom']),
+              Paragraph(f"Hits allowed: <b>{g['hits']}</b> | Strikeouts: <b>{g['strikeouts']}</b> | "
+                        f"Double plays: <b>{g['double_plays']}</b> | Intentional walks: <b>{g['intentional_walks']}</b> | "
+                        f"Pitching changes: <b>{len(g['decisions'])}</b>",styles['SmallCustom'])]
+    if g['achievements']:
+        story.append(Paragraph('Achievements: '+pdf_escape(', '.join(g['achievements'])),styles['SmallCustom']))
+    story.append(Paragraph('Evidence from managerial decisions',styles['SubtitleCustom']))
+    if g['decisions']:
+        for decision in g['decisions'][:7]:
+            story.append(Paragraph(
+                f"Inning {pdf_escape(decision.get('Inning','?'))}: "
+                f"{pdf_escape(decision.get('Out','?'))} to {pdf_escape(decision.get('In','?'))}. "
+                f"Reason: {pdf_escape(decision.get('Reason','—'))}. "
+                f"Modelled risk index: {pdf_escape(decision.get('Old risk','—'))} to "
+                f"{pdf_escape(decision.get('New risk','—'))}.",styles['SmallCustom']))
     else:
-        pdf.drawString(42, 490, "No completed laps")
-    pdf.drawString(42, 448, f"Tire compounds used: {', '.join(dict.fromkeys(you(g)['used']))}")
-    pdf.setFont("Helvetica-Bold", 14)
-    pdf.drawString(42, 413, "KEY STRATEGY DECISIONS")
-    pdf.setFont("Helvetica", 10)
-    y = 392
-    for row in g.get('engineer_choices', [])[-8:]:
-        line = f"Lap {row.get('Lap')}: {row.get('Driving pace')} | {row.get('Tactic')} | {row.get('Tires')}"
-        pdf.drawString(46, y, line[:105])
-        y -= 18
-    pdf.setFont("Helvetica-Bold", 12)
-    pdf.drawString(42, 226, "STUDENT REFLECTION")
-    pdf.setFont("Helvetica", 10)
-    from reportlab.lib.utils import simpleSplit
-    lines = simpleSplit(reflection or "What choice helped you most, and what evidence supports it?", "Helvetica", 10, 520)
-    for j, line in enumerate(lines[:4]):
-        pdf.drawString(46, 207 - j * 16, line)
-    pdf.setStrokeColor(HexColor('#D5DEE8'))
-    pdf.line(42, 95, 570, 95)
-    pdf.setFillColor(gray)
-    pdf.setFont('Helvetica-Oblique', 9)
-    pdf.drawString(42, 79, "Real driver names; race timing, weather and outcomes are simulated for learning.")
-    pdf.drawString(42, 64, "Reaction time includes network delay; not a laboratory-grade measurement.")
-    pdf.showPage()
-    pdf.save()
-    buffer.seek(0)
-    return buffer.getvalue()
+        story.append(Paragraph('No pitching substitutions were made.',styles['SmallCustom']))
+    story.append(Paragraph('Major plays',styles['SubtitleCustom']))
+    for highlight in g.get('highlights',[])[-4:]:
+        story.append(Paragraph('• '+pdf_escape(highlight),styles['SmallCustom']))
+    story += [Paragraph('Student reflection (complete after the game)',styles['SubtitleCustom'])]
+    for q in ['1. Which managerial decision mattered most? Explain using at least two statistics.',
+              '2. Did you make a good decision that produced an unlucky outcome? Explain.',
+              '3. What would you change in your next game?']:
+        story.append(Paragraph(pdf_escape(q),styles['SmallCustom']))
+        story.append(Paragraph('_'*96,styles['SmallCustom']))
+    story.append(Spacer(1,5))
+    story.append(Paragraph('This is an instructional rubric, not a validated estimate of MLB managerial skill. '
+                           'Historical player statistics inform an educational simulation; outcomes and risk indices are modelled.',
+                           styles['SmallCustom']))
+    doc.build(story)
+    return buf.getvalue()
 
 
-def launch_feedback(g):
-    """Persistent feedback after the five-light challenge."""
-    if not g.get('launch_result'):
-        return
-    change = float(g.get('start_delay', 0))
-    reaction = g.get('launch_reaction')
-    if change < 0:
-        headline = '🚀 LAUNCH BONUS'
-        explanation = f'{abs(change):.2f} seconds removed from your starting race time.'
-        kind = 'success'
-    elif change >= 5:
-        headline = '🚨 JUMP START PENALTY'
-        explanation = f'{change:.2f} seconds added to your starting race time.'
-        kind = 'error'
-    else:
-        headline = '🏁 START COMPLETED'
-        explanation = f'{change:.2f} seconds added to your starting race time.'
-        kind = 'warning' if change > 0.5 else 'info'
-    reading = f'Reaction: {reaction:.3f}s' if reaction is not None else 'Reaction not recorded'
-    text = f"**{headline}**  ·  {reading}  ·  {explanation}"
-    getattr(st, kind)(text)
-
-
-def gap_projection(g, laps=3):
-    """Display recent race pace and simple forward gap scenarios."""
-    driver = you(g)
-    ordered = ranking(g)
-    idx = next(i for i, d in enumerate(ordered) if d is driver)
-    mine = recent_pace(driver)
-    if mine is None:
-        return pd.DataFrame()
-    rows = []
-    for label, other, gap_now in [
-        ("Car ahead", ordered[idx-1] if idx > 0 else None,
-         driver["elapsed"] - ordered[idx-1]["elapsed"] if idx > 0 else None),
-        ("Car behind", ordered[idx+1] if idx+1 < len(ordered) else None,
-         ordered[idx+1]["elapsed"] - driver["elapsed"] if idx+1 < len(ordered) else None),
-    ]:
-        if other is None:
+def safe_career_import(raw):
+    data=json.loads(raw)
+    if not isinstance(data,dict) or data.get('format')!='sbtn-career-v1':
+        raise ValueError("This is not a compatible career file.")
+    records=data.get('games',[])
+    if not isinstance(records,list) or len(records)>2000:
+        raise ValueError('Invalid game history.')
+    cleaned=[]
+    for record in records:
+        if not isinstance(record,dict) or not record.get('id'):
             continue
-        rival = recent_pace(other)
-        if rival is None:
-            continue
-        closing = rival - mine if label == "Car ahead" else mine - rival
-        rows.append({
-            "Rival": label + ": " + other["name"],
-            "Gap now (s)": round(gap_now, 2),
-            "Your mean (s)": round(mine, 2),
-            "Rival mean (s)": round(rival, 2),
-            "Gain/loss per lap (s)": round(closing, 2),
-            f"Gap after {laps} laps (s)": round(max(0, gap_now - closing * laps), 2),
-        })
-    return pd.DataFrame(rows)
+        cleaned.append({k:v for k,v in record.items() if k in {
+            'id','date_utc','manager','season','team','opponent','difficulty',
+            'runs','hits','strikeouts','shutout','grade','letter','rubric',
+            'achievements','pitching_changes','strategies'}})
+    return clean_manager_name(data.get('manager','Manager')),cleaned
 
-st.title("🏎️ F1: THE PIT WALL · V9")
-st.caption("Sports by the Numbers • 2026 driver names • fictional race performance • simplified track outlines")
 
-if "pit_wall_v3" not in st.session_state:
-    st.session_state.pit_wall_v3 = None
+st.title("⚾ YOU'RE THE MANAGER · CAREER STADIUM")
+st.caption('SPORTS BY THE NUMBERS  •  DOVER TIGERS  •  2000–2025 MLB  •  Historical player stats / simulated outcomes')
+if 'game' not in st.session_state: st.session_state.game=None
+if 'loaded' not in st.session_state: st.session_state.loaded=None
+if 'selected_relief_id' not in st.session_state: st.session_state.selected_relief_id=None
+if 'career_games' not in st.session_state: st.session_state.career_games=[]
+if 'career_name' not in st.session_state: st.session_state.career_name='Manager'
 
-if st.session_state.pit_wall_v3 is None:
-    st.subheader("Grand Prix setup")
-    st.caption("Expected tire life is an educational estimate; aggressive driving uses tires faster.")
-    a, b, c = st.columns([2, 1, 2])
-    track = a.selectbox("Circuit", list(TRACKS))
-    laps = b.slider("Race laps", 8, 30, 14)
-    driver = c.selectbox("Your driver", [d[0] for d in GRID], format_func=lambda n: f"{n} · {TEAM[n]}")
-    st.info("🚦 This weekend includes interactive sector qualifying and a five-red-lights reaction start. No repeated statistics quiz.")
-    st.info("🌦️ This circuit's simulated rain climate: " + f"{TRACKS[track][3]:.0%} baseline. During the race, a changing probabilistic weather forecast will influence tire strategy.")
-    st.markdown("**Estimated useful laps per tire at this circuit**")
-    st.dataframe(pd.DataFrame([{"Tire": TIRE_SYMBOL[t] + " " + t, "Expected useful laps": expected_life({"track": track}, t)} for t in TIRE_LIFE]), hide_index=True, use_container_width=True)
-    if st.button("🏁 BEGIN QUALIFYING", type="primary", use_container_width=True):
-        st.session_state.pit_wall_v3 = new_game(track, laps, driver)
+# Record completed games once, even on Streamlit reruns.
+active_game=st.session_state.game
+if active_game and active_game.get('finished') and not active_game.get('career_saved',False):
+    record=career_record(active_game,st.session_state.career_name)
+    ids={x.get('id') for x in st.session_state.career_games}
+    if record['id'] not in ids:
+        st.session_state.career_games.append(record)
+    active_game['career_saved']=True
+
+with st.expander('🏆 CAREER MANAGER • Profile, history, and backups',expanded=st.session_state.game is None):
+    st.text_input('Manager name / student identifier',key='career_name',max_chars=45,
+                  help='Avoid full student names if career files will be shared.')
+    summary=career_stats(st.session_state.career_games)
+    mini=st.columns(4)
+    for col,(label,value) in zip(mini,summary.items()):col.metric(label,value)
+    if st.session_state.career_games:
+        st.dataframe(pd.DataFrame(st.session_state.career_games)[
+            ['date_utc','season','team','opponent','difficulty','runs','grade','letter','shutout']
+        ],hide_index=True,use_container_width=True,height=200)
+    career_payload={'format':'sbtn-career-v1','manager':clean_manager_name(st.session_state.career_name),
+                    'games':st.session_state.career_games}
+    st.download_button('💾 SAVE CAREER FILE (JSON)',
+        data=json.dumps(career_payload,indent=2),file_name='manager_career.json',
+        mime='application/json',key='download_career')
+    uploaded=st.file_uploader('Load a previously saved career file',type=['json'],key='career_upload')
+    if uploaded is not None and st.button('📂 IMPORT / MERGE CAREER',key='import_career'):
+        try:
+            imported_name,imported_records=safe_career_import(uploaded.getvalue().decode('utf-8'))
+            existing={x.get('id') for x in st.session_state.career_games}
+            count=0
+            for item in imported_records:
+                if item['id'] not in existing:
+                    st.session_state.career_games.append(item)
+                    existing.add(item['id'])
+                    count+=1
+            # Keep the current manager name; it can be edited in the profile field.
+            st.success(f'Imported {count} previously unrecorded games.')
+            st.rerun()
+        except (ValueError,UnicodeError,TypeError,KeyError) as error:
+            st.error(f'Career import failed: {error}')
+    st.caption('Career progress lives in this browser session until you export it. '
+               'For future visits or different devices, download the JSON and import it next time. '
+               'Streamlit Community Cloud does not guarantee persistent local storage.')
+
+
+with st.expander('⚙️ NEW GAME • Season & matchup', expanded=st.session_state.game is None):
+    year=st.selectbox('Season',list(range(2025,1999,-1)))
+    try:
+        teams={t['name']:t['id'] for t in team_list(year)}
+        setup_a,setup_b=st.columns(2)
+        own=setup_a.selectbox('Your pitching team',list(teams))
+        opp=setup_b.selectbox('Opposing batting team',[x for x in teams if x!=own])
+        if st.button('LOAD HISTORICAL ROSTERS',type='primary'):
+            st.session_state.loaded=None
+            with st.status('Preparing historical teams...',expanded=True) as status:
+                progress=st.progress(0)
+                st.write('⚾ Loading starters & relievers')
+                staff=load_squad(teams[own],year,'pitching')
+                progress.progress(50)
+                st.write('🏏 Building batting lineup and bench')
+                hitters=load_squad(teams[opp],year,'hitting')
+                progress.progress(90)
+                if staff and len(hitters)>=9:
+                    st.session_state.loaded=dict(year=year,team=own,opponent=opp,staff=staff,hitters=hitters)
+                    st.session_state.game=None
+                    status.update(label='✅ Teams loaded',state='complete',expanded=False)
+                else:
+                    st.error('Not enough roster data loaded. Try another season or matchup.')
+                    status.update(label='Roster incomplete',state='error',expanded=True)
+                progress.progress(100)
+    except requests.RequestException as err:
+        st.error('MLB data unavailable right now.');st.caption(str(err))
+
+loaded=st.session_state.loaded
+if loaded and st.session_state.game is None:
+    starters=[x for x in loaded['staff'] if x['role']=='SP'] or loaded['staff']
+    by_id={p['id']:p for p in starters}
+    s1,s2=st.columns(2)
+    starter=s1.selectbox('Choose your starting pitcher',list(by_id),format_func=lambda pid:f"{by_id[pid]['name']} • {throwing(by_id[pid]['throws'])} • ERA {by_id[pid]['stats'].get('era','—')}")
+    difficulty=s2.selectbox('Difficulty',['Rookie','Pro','Hall of Fame'])
+    st.markdown('#### 🕵️ Pregame Scouting Room')
+    st.caption('Rankings use real season statistics. Predictions and managerial tactics remain your choices.')
+    scout_hitters=loaded['hitters'][:9]
+    scout_rows=[]
+    for player_obj in scout_hitters:
+        stats=player_obj['stats']
+        scout_rows.append({'Hitter':player_obj['name'],'Bats':player_obj['bats'],
+          'AVG':stats.get('avg','—'),'OBP':stats.get('obp','—'),
+          'OPS':stats.get('ops','—'),'HR':int(number(stats.get('homeRuns')))})
+    st.dataframe(pd.DataFrame(scout_rows),hide_index=True,use_container_width=True,height=235)
+    ids={x['id']:x for x in scout_hitters}
+    threats=st.multiselect('Pick the THREE hitters most dangerous to your shutout',
+       options=list(ids),max_selections=3,format_func=lambda pid:ids[pid]['name'])
+    plan=st.selectbox('Pregame strategy',[
+       'Attack hitters early', 'Pitch carefully to power hitters',
+       'Lean on ground-ball defense', 'Prepare the bullpen early'])
+    rationale=st.text_input('Why did you choose this starter? (one statistical reason)',
+       max_chars=180,placeholder='Example: Low WHIP and strong strikeout rate')
+    if st.button('⚾ PLAY BALL!',type='primary',disabled=len(threats)!=3 or not rationale.strip()):
+        loaded['scouting']={'threat_ids':threats,'plan':plan,'rationale':rationale.strip(),
+                           'starter_id':starter}
+        st.session_state.game=starting_game(loaded,starter,difficulty)
+        st.session_state.selected_relief_id=None
         st.rerun()
-    st.stop()
 
-g = st.session_state.pit_wall_v3
-mine = you(g)
-if g["stage"] == "qualifying":
-    st.subheader(f"⏱️ Qualifying · {g['track']}")
-    st.caption("Choose how to approach your flying lap. Compare the three practice sectors and identify where the biggest improvement is possible.")
-    if g["sector_data"] is None:
-        g["sector_data"] = sector_reference(g)
-    sectors = g["sector_data"]
-    cols = st.columns(3)
-    for i, col in enumerate(cols):
-        col.metric(f"Practice sector {i+1}", f"{sectors[i]:.2f}s")
-    slow = max(range(3), key=lambda i: sectors[i])
-    with st.form("qualifying_strategy"):
-        focus = st.radio("Where would you focus on finding lap time?", ["Sector 1", "Sector 2", "Sector 3"], horizontal=True)
-        tire = st.radio("Qualifying compound", ["Soft","Medium","Hard"], horizontal=True)
-        mode = st.radio("Qualifying attack mode", ["Balanced","Push","Conserve"], horizontal=True)
-        st.caption("Statistic tip: the highest sector time is the slowest sector, although the most improvement is not always guaranteed there.")
-        submit = st.form_submit_button("🏁 SET FLYING LAP & QUALIFY", type="primary", use_container_width=True)
-    if submit:
-        correct = (int(focus[-1])-1) == slow
-        g["qual_score"] = int(correct)
-        qualify(g, mode, tire, int(correct))
-        st.rerun()
-    if st.button("New weekend"):
-        st.session_state.pit_wall_v3 = None
-        st.rerun()
-    st.stop()
+g=st.session_state.game
+if g:
+    p=pitcher(g)
+    h=batter(g)
+    st.markdown(f"**{g['year']} {g['team']} vs. {g['opponent']}** · {g['mode']} · Shutout Challenge")
+    # One single-row compact scoreboard, instead of six large metric cards.
+    scoreboard=(f"<div class='score-strip'>"
+                f"<span>INNING <b>{min(9,g['inning'])}</b></span>"
+                f"<span>OUTS <b>{g['outs']}</b></span>"
+                f"<span>RUNS <b>{g['runs']}</b></span>"
+                f"<span>HITS <b>{g['hits']}</b></span>"
+                f"<span>PITCHES <b>{g['pitches'][p['id']]}</b></span>"
+                f"<span>K <b>{g['strikeouts']}</b></span></div>")
+    st.markdown(scoreboard,unsafe_allow_html=True)
+    left,center,right=st.columns([1.25,2.65,1.35],gap='small')
+    available=[x for x in g['staff'] if x['id'] not in g['used']]
+    available_ids={x['id']:x for x in available}
+    if st.session_state.selected_relief_id not in available_ids:
+        st.session_state.selected_relief_id=available[0]['id'] if available else None
+    selected_id=st.session_state.selected_relief_id
+    selected=available_ids.get(selected_id)
+    with left:
+        st.markdown('##### 🔥 BULLPEN')
+        st.markdown(f"**{escape(p['name'])}** · {throwing(p['throws'])} · {p['role']}")
+        st.caption(f"ON MOUND · ERA {p['stats'].get('era','—')} · WHIP {p['stats'].get('whip','—')}")
+        st.progress(bounded(fatigue(g,p),0,1),text=f"Fatigue {fatigue(g,p):.0%}")
+        st.progress(pitcher_confidence(g,p)/100,text=f"Confidence {pitcher_confidence(g,p)} / 100 (simulated)")
+        if not g['finished']:
+            if st.button(f"🧢 MOUND VISIT · {g.get('mound_visits',5)} left",key='side_mound_visit',
+                         use_container_width=True,disabled=g.get('mound_visits',0)<=0):
+                mound_visit(g)
+                st.rerun()
+            if g.get('visit_boost',{}).get(p['id'],0):
+                st.caption('Visit boost active: reduced modeled hit/walk risk for the next 2 batters')
 
-if g["stage"] == "start":
-    st.subheader("🚦 GRAND PRIX START · FIVE RED LIGHTS")
-    st.write(f"**{g['player']} — Starting grid position P" + str(next(i for i, d in enumerate(sorted(g['drivers'],key=lambda d:d['qual']),1) if d['name']==g['player'])))
-    st.caption("Your reaction directly changes the starting race time. You will see the exact bonus or penalty on the race dashboard and PDF report.")
-    light_challenge(g)
-    st.stop()
-
-ordered = ranking(g)
-position = next(i for i, d in enumerate(ordered, 1) if d is mine)
-stats = timer_stats(g)
-ahead, behind = proximity(g)
-engineer = engineering_report(g)
-
-# Compact control tower: critical actions are in the first screen.
-st.markdown("""<style>
-.block-container {padding-top:.3rem !important; max-width:1800px !important}
-h1 {font-size:1.5rem !important; margin:0 !important; padding:0 !important}
-h3 {font-size:1.05rem !important; margin:.15rem 0 !important; padding:0 !important}
-[data-testid="stMetric"] {padding:5px 8px !important; min-height:64px !important}
-[data-testid="stMetricValue"] {font-size:1.18rem !important}
-[data-testid="stMetricLabel"] {font-size:.68rem !important}
-[data-testid="stVerticalBlock"] {gap:.45rem !important}
-[data-testid="stHorizontalBlock"] {gap:.55rem !important}
-div[data-testid="stRadio"] label {padding:0 !important}
-div.stButton > button[kind="primary"] {min-height:48px; font-size:1.05rem}
-</style>""", unsafe_allow_html=True)
-
-labels = ["LAP", "POSITION", "LAST", "MEAN", "BEST", "GAP AHEAD", "TIRE"]
-values = [f"{g['lap']}/{g['total']}", f"P{position}/22",
-          f"{stats[0]:.2f}s" if stats else "—",
-          f"{stats[2]:.2f}s" if stats else "—",
-          f"{stats[1]:.2f}s" if stats else "—",
-          f"{ahead[1]:.2f}s" if ahead else "LEADER",
-          f"{TIRE_SYMBOL[mine['tire']]} {mine['tire']}"]
-for col, label, value in zip(st.columns(7, gap="small"), labels, values):
-    col.metric(label, value)
-
-# Persistent start feedback: visible on every race lap, not lost in event logs.
-launch_feedback(g)
-
-# Three primary panels keep everything needed to run a lap on screen.
-track_col, timing_col, control_col = st.columns([1.08, 1.04, 1.08], gap="small")
-
-with track_col:
-    st.markdown("### 🗺️ Circuit tracker")
-    circuit_map(g)
-    st.markdown("**🏎️ Nearest rivals**")
-    if ahead:
-        st.caption(f"⬆ {ahead[0]} · **{ahead[1]:.2f}s ahead**")
-    else:
-        st.caption("🥇 You're currently leading")
-    if behind:
-        st.caption(f"⬇ {behind[0]} · **{behind[1]:.2f}s behind**")
-    st.markdown("**🛞 Tire wear**")
-    life = expected_life(g, mine["tire"])
-    wear_percent = min(100, round(100 * mine["age"] / life))
-    st.progress(wear_percent / 100, text=f"{wear_percent}% used · {mine['age']:.1f}/{life} expected laps")
-
-with timing_col:
-    st.markdown("### 📊 Live timing")
-    rows = []
-    leader = ordered[0]["elapsed"]
-    for i, d in enumerate(ordered, 1):
-        rows.append({"P":i,"Driver":("★ " if d is mine else "")+d["name"],
-                     "Gap": "LEAD" if i == 1 else f"+{d['elapsed']-leader:.1f}",
-                     "Tire":TIRE_SYMBOL[d["tire"]]})
-    # Show the nearest cars, and all cars in the detailed tab below.
-    lo = max(0, position - 4)
-    hi = min(22, max(8, position + 3))
-    st.dataframe(pd.DataFrame(rows[lo:hi]), use_container_width=True,
-                 hide_index=True, height=232)
-    st.markdown("**⏱️ Latest lap comparisons**")
-    if g["entries"]:
-        df = pd.DataFrame(g["entries"])
-        df["Change"] = df["Time"].diff().map(lambda x: f"{x:+.2f}s" if pd.notna(x) else "—")
-        df = df.sort_values("Lap", ascending=False)
-        st.dataframe(df[["Lap", "Time", "Change", "Pos"]].head(4),
-                     hide_index=True, use_container_width=True, height=177)
-    else:
-        st.caption("Run lap 1 to see the latest lap at the top.")
-
-with control_col:
-    st.markdown("### 🎧 Pit wall controls")
-    next_lap = g["lap"] + 1
-    outlook = rain_outlook(g)
-    if outlook:
-        st.caption("🌦️ " + " · ".join(f"L{lap} **{prob:.0%}** rain" for lap,prob in outlook[:3]) + f" · Track: **{g['weather']}**")
-    st.caption(f"📻 **Engineer:** {engineer['reason']}")
-    st.caption(f"Suggested: **{engineer['recommendation']}** · Tires: **{engineer['pit']}**")
-
-    if not g["finished"]:
-        st.markdown(f"**PLAN LAP {next_lap} / {g['total']}**")
-        mode = st.radio("Driving pace", ["Balanced", "Push", "Conserve"],
-                        horizontal=True, key=f"mode_{next_lap}")
-        tactic = st.radio("Track battle", ["Balanced", "Attack", "Defend"], horizontal=True, key=f"battle_{next_lap}")
-        follow = st.checkbox("Follow engineer recommendation", value=False, key=f"follow_{next_lap}", help="Documents your decision for the report card; you can still choose your own controls.")
-        pit_choice = st.selectbox("Tire / pit decision",
-                    ["Stay out", "Soft", "Medium", "Hard", "Intermediate", "Wet"],
-                    key=f"pit_{next_lap}")
-        if pit_choice == "Stay out":
-            if g["pit_challenge"] is not None:
-                g["pit_challenge"] = None
-            if st.button("▶ RUN NEXT LAP", type="primary", use_container_width=True):
-                sim_lap(g, "Stay out", mode, tactic=tactic, engineer_follow=follow)
+        if available and not g['finished']:
+            st.caption('Tap a pitcher to scout or manage')
+            # Exactly four immediately visible compact card buttons; additional pitchers via selectbox.
+            for x in available[:4]:
+                pid=x['id']
+                state='🟢 READY' if pid in g['ready'] else f"🟡 {g['warming'][pid]}/2" if pid in g['warming'] else '⚪ COLD'
+                label=f"{'▶ ' if pid==selected_id else ''}{x['name']} · {throwing(x['throws'])} · {state}"
+                if st.button(label,key=f'side_pitcher_{pid}',use_container_width=True,type='primary' if pid==selected_id else 'secondary'):
+                    st.session_state.selected_relief_id=pid
+                    st.rerun()
+            if len(available)>4:
+                extra_lookup={x['id']:x for x in available[4:]}
+                extra_options=[None]+list(extra_lookup)
+                extra_id=st.selectbox('More relievers',extra_options,format_func=lambda pid:'Choose another pitcher' if pid is None else f"{extra_lookup[pid]['name']} ({throwing(extra_lookup[pid]['throws'])})",key='side_more_relief')
+                if extra_id is not None and st.button('Select additional pitcher',key='side_select_more',use_container_width=True):
+                    st.session_state.selected_relief_id=extra_id
+                    st.rerun()
+            if selected:
+                pid=selected['id']
+                st.markdown(f"**Selected:** {escape(selected['name'])}")
+                st.caption(f"{selected['role']} · {throwing(selected['throws'])} · ERA {selected['stats'].get('era','—')} · WHIP {selected['stats'].get('whip','—')}")
+                if pid in g['warming']:
+                    st.warning(f"Warming: {g['warming'][pid]}/2 batters")
+                elif pid in g['ready']:
+                    reason=st.selectbox('Reason',['Better matchup','Fatigue','Handedness advantage','Strikeout ability','Prevent runs'],key='side_reason')
+                    if st.button('🔁 BRING IN',disabled=not legal_change(g),type='primary',use_container_width=True,key='side_bring'):
+                        bring_in(g,pid,reason)
+                        st.session_state.selected_relief_id=None
+                        st.rerun()
+                    if not legal_change(g):st.caption('Three-batter minimum applies')
+                else:
+                    if st.button('🔥 WARM UP',use_container_width=True,key='side_warm'):
+                        warm(g,pid)
+                        st.rerun()
+        elif not available: st.caption('No unused pitchers remain')
+    with center:
+        st.markdown(f"**⚾ {escape(h['name'])}** · {escape(h['bats'])} BAT · AVG {h['stats'].get('avg','—')}")
+        if not g['finished']:
+            approach=st.radio('Pitch approach',['Balanced','Attack the zone','Pitch carefully'],horizontal=True,key='pitch_strategy',label_visibility='collapsed')
+            defenses=['Normal']
+            if g['bases'][0] and g['outs']<2:defenses.append('Double-play depth')
+            if g['bases'][2] and g['outs']<2:defenses.append('Infield in')
+            dcol,icol=st.columns([1.4,1])
+            with dcol: defense=st.selectbox('Defense',defenses,key='side_defense')
+            with icol:
+                if st.button('🚶 INTENTIONAL WALK',disabled=all(g['bases']),use_container_width=True,key='side_iw'):
+                    intentional_walk(g)
+                    st.rerun()
+            if st.button('⚾ PITCH TO BATTER',type='primary',use_container_width=True,key='side_pitch'):
+                simulate(g,approach,defense)
                 st.rerun()
         else:
-            ch = g["pit_challenge"]
-            if ch is None or ch["lap"] != next_lap:
-                if st.button("🔧 START PIT STOP", type="primary", use_container_width=True):
-                    g["pit_challenge"] = {"lap":next_lap,"targets":new_targets(g),"started":time.monotonic()}
-                    st.rerun()
-            else:
-                st.caption("Match three slider targets to complete your pit stop.")
-                answers = []
-                for i,(label,target) in enumerate(zip(["Front jack","Left wheel","Right wheel"],ch["targets"])):
-                    answers.append(st.slider(f"{label} · target {target}",0,100,50,key=f"pit_align_{next_lap}_{i}"))
-                if st.button("✅ COMPLETE PIT STOP & RUN LAP", type="primary", use_container_width=True):
-                    elapsed = time.monotonic()-ch["started"]
-                    stationary,grade = pit_quality(ch["targets"], answers, elapsed)
-                    sim_lap(g,pit_choice,mode,stationary,tactic=tactic,engineer_follow=follow)
-                    g["events"].insert(0,f"Pit crew: {grade} · {stationary:.2f}s stationary")
-                    st.rerun()
-                if st.button("Cancel pit stop"):
-                    g["pit_challenge"] = None
-                    st.rerun()
-        if not g["was_wet"] and len(set(mine["used"]) & DRY) < 2:
-            st.caption("⚠️ Dry race: plan to use two different dry compounds.")
-    else:
-        rule_ok = g["was_wet"] or len(set(mine["used"]) & DRY)>=2
-        grade=max(0,100-(0 if rule_ok else 25)-max(0,mine["stops"]-3)*5)
-        st.success(f"🏁 Finished P{position} · Strategy score {grade}/100")
-        if not g["championship_awarded"]:
-            if "f1_championship" not in st.session_state:
-                st.session_state.f1_championship = []
-            st.session_state.f1_championship.append({"track":g["track"],"finish":[d["name"] for d in ranking(g)]})
-            g["championship_awarded"] = True
-        st.caption(f"Championship weekends recorded: {len(st.session_state.f1_championship)}")
-        reflection=st.text_area("What would you change next time?")
-        report=(f"F1 The Pit Wall\nDriver: {g['player']}\nCircuit: {g['track']}\n"
-                f"Finish: P{position}\nStrategy score: {grade}\n"
-                f"Mean lap: {stats[2]:.2f}s\nPit stops: {mine['stops']}\nReflection: {reflection}\n")
-        report += (f"Launch: {g['launch_result']}\nWeather history: {g['weather_history']}\n"
-                   f"Strategy decisions: {g['engineer_choices']}\n")
-        st.download_button("Download coach report",report,"f1_coach_report.txt","text/plain",use_container_width=True)
-        pdf_bytes = make_pdf_report(g, position, grade, reflection)
-        st.download_button("📄 Download printable PDF report", pdf_bytes, "f1_strategy_report.pdf", "application/pdf", use_container_width=True)
-    if g["events"]:
-        st.caption("📻 " + " | ".join(g["events"][:2]))
-    if st.button("🔄 New race", use_container_width=True):
-        st.session_state.pit_wall_v3 = None
-        st.rerun()
-
-# Secondary screens: no need to scroll here during ordinary racing.
-st.divider()
-full_timing, lap_data, weather_tab, strategy_tab, season_tab = st.tabs([
-    "🏎️ Full timing", "📈 Lap history", "🌦️ Weather radar", "🧠 Engineer & analysis", "🏆 Championship"
-])
-with full_timing:
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True, height=425)
-    st.dataframe(pd.DataFrame(g["qual_results"]), hide_index=True, use_container_width=True, height=180)
-with lap_data:
-    if g["entries"]:
-        df = pd.DataFrame(g["entries"])
-        st.line_chart(df.set_index("Lap")[["Time"]], height=235)
-        st.dataframe(df.sort_values("Lap",ascending=False), hide_index=True,use_container_width=True,height=250)
-        if g["lap"] > 1:
-            replay = st.slider("Replay lap",1,g["lap"],g["lap"])
-            st.dataframe(pd.DataFrame(g["snapshots"][replay-1]),hide_index=True,use_container_width=True)
-        st.download_button("Download all timing",pd.DataFrame([r for snap in g["snapshots"] for r in snap]).to_csv(index=False),"f1_race_timing.csv","text/csv")
-with weather_tab:
-    forecast_display(g)
-    if g["weather_history"]:
-        st.dataframe(pd.DataFrame(g["weather_history"][::-1]),hide_index=True,use_container_width=True)
-with strategy_tab:
-    st.write(engineer["reason"])
-    for detail in engineer["details"]:
-        st.write("• " + detail)
-    st.markdown("**🎧 Ask your engineer**")
-    question = st.selectbox("Race question", [
-        "Can I catch the car ahead?",
-        "Should I pit soon?",
-        "How many laps can these tires last?",
-        "What if I pit now (undercut)?",
-        "Should I follow the weather forecast?",
-    ], key="engineer_question")
-    mydriver = you(g)
-    front, back = proximity(g)
-    if question == "Can I catch the car ahead?":
-        if front and g["lap"]:
-            rival = next(d for d in g["drivers"] if d["name"] == front[0])
-            my_mean, rival_mean = recent_pace(mydriver), recent_pace(rival)
-            gain = (rival_mean - my_mean) if my_mean is not None and rival_mean is not None else 0
-            if gain > .05:
-                st.info(f"Gap: {front[1]:.2f}s. You gain about {gain:.2f}s/lap. Estimate: {front[1]/gain:.1f} laps to catch if pace remains similar.")
-            else:
-                st.info(f"Gap: {front[1]:.2f}s. Recent pace does not support predicting that you'll catch the next car without a change.")
+            st.success('🏆 SHUTOUT!' if g['runs']==0 else f"FINAL · {g['runs']} runs allowed")
+        diamond(g)
+        if g.get('last_play') and g['last_play']!='Game begins!':
+            st.caption('📻 '+g['last_play'])
+    with right:
+        st.markdown('##### 🧢 NEXT BATTERS')
+        for i,x in enumerate(next_hitters(g)):
+            marker=['🔴','🟡','⚪'][i]
+            st.markdown(f"{marker} **{escape(x['name'])}** · {escape(x['bats'])} · {x['stats'].get('avg','—')}")
+        alert=danger(g)
+        if alert:st.warning(alert)
+        st.markdown('##### 📊 MATCHUP')
+        if selected and not g['finished']:
+            current_probs=[estimate(g,p,b) for b in next_hitters(g)]
+            selected_probs=[estimate(g,selected,b) for b in next_hitters(g)]
+            current_hit=sum(x[0] for x in current_probs)/3*100
+            reliever_hit=sum(x[0] for x in selected_probs)/3*100
+            current_k=sum(x[2] for x in current_probs)/3*100
+            reliever_k=sum(x[2] for x in selected_probs)/3*100
+            st.markdown(f"**Current:** {current_hit:.1f}% hit · {current_k:.1f}% K")
+            st.markdown(f"**{escape(selected['name'])}:** {reliever_hit:.1f}% hit · {reliever_k:.1f}% K")
+            change=reliever_hit-current_hit
+            st.caption(f"{abs(change):.1f} percentage points {'lower' if change<0 else 'higher' if change>0 else 'different'} modeled hit risk with selected reliever")
+            if selected_id in g['ready']:st.caption('🟢 Reliever ready')
+            elif selected_id in g['warming']:st.caption('🟡 Warming up')
+            else:st.caption('⚪ Must warm up')
         else:
-            st.info("No car ahead, or not enough laps to compare yet.")
-    elif question == "Should I pit soon?":
-        life = expected_life(g, mydriver["tire"])
-        st.info(f"Your tire age is {mydriver['age']:.1f}/{life} expected laps. {engineer['reason']} Typical pit loss is roughly {TRACKS[g['track']][1]:.0f}s, plus or minus stop execution and neutralizations.")
-    elif question == "How many laps can these tires last?":
-        life = expected_life(g, mydriver["tire"])
-        st.info(f"Estimated remaining useful life: {max(0,life-mydriver['age']):.1f} laps at comparable wear. Push mode increases wear; this estimate is not a hard failure threshold.")
-    elif question == "What if I pit now (undercut)?":
-        pit_loss = TRACKS[g["track"]][1]
-        fresh_advantage = max(.1, mydriver["age"] * TIRE_WEAR[mydriver["tire"]] * TRACKS[g["track"]][2] + .45)
-        recover = pit_loss / fresh_advantage
-        st.info(f"A new tire might save ~{fresh_advantage:.2f}s/lap compared with your worn current tire. Recovering a normal ~{pit_loss:.1f}s pit loss would then take ~{recover:.1f} laps. This is a simplified undercut estimate, not a guarantee: rivals may pit too, and the weather may change.")
-    else:
-        head, advice = weather_strategy(g)
-        st.info(f"{head}: {advice} Look at probability rather than assuming rain is certain.")
-    st.write("**Projected future gaps**")
-    projection = gap_projection(g, min(3,max(1,g["total"]-g["lap"])))
-    if not projection.empty:
-        st.dataframe(projection,hide_index=True,use_container_width=True)
-    st.write("**Estimated tire life**")
-    st.dataframe(pd.DataFrame([{"Tire":TIRE_SYMBOL[t]+" "+t,"Expected laps":expected_life(g,t)} for t in TIRE_LIFE]),hide_index=True,use_container_width=True)
-
-with season_tab:
-    with st.expander("📂 Resume a saved championship"):
-        uploaded_season = st.file_uploader("Upload saved championship JSON", type=["json"], key="restore_champ_v9")
-        if uploaded_season is not None and st.button("Restore championship", key="restore_championship_v9"):
-            try:
-                restored = json.load(uploaded_season)
-                if not isinstance(restored, list) or not all(isinstance(r, dict) and isinstance(r.get("finish"), list) and isinstance(r.get("track"), str) for r in restored):
-                    raise ValueError("Not a valid championship export")
-                st.session_state.f1_championship = restored
-                st.rerun()
-            except (ValueError, TypeError, json.JSONDecodeError) as err:
-                st.error(f"Could not restore championship: {err}")
-    races = st.session_state.get("f1_championship", [])
-    if races:
-        st.dataframe(championship_table(races), hide_index=True, use_container_width=True, height=350)
-        st.caption("Official-style points (25–18–15–12–10–8–6–4–2–1). Export your season to keep it between sessions.")
-        st.download_button("💾 Save championship progress", json.dumps(races, indent=2), "f1_championship.json", "application/json")
-    else:
-        st.caption("Finish a race to begin the championship.")
-    if g["entries"]:
-        times = [row["Time"] for row in g["entries"]]
-        st.markdown(f"**Your data:** Mean {mean(times):.2f}s · Median {median(times):.2f}s · Range {max(times)-min(times):.2f}s")
-        st.write("**Reflection:** Which decision was supported by data? Which result might have been due to luck?")
-    if g["incidents"]:
-        st.dataframe(pd.DataFrame(g["incidents"]), hide_index=True)
-
-st.caption("Educational simulator: qualifying, start lights, weather, overtakes and race incidents use simplified or simulated data. Reaction timing includes network latency.")
+            st.caption('Select a reliever for a quick comparison.')
+        st.caption('Modeled estimates; not MLB forecasts.')
+    # Only optional, nonessential details below the main game.
+    history_tab,scout_tab,lab_tab,report_tab=st.tabs(['📻 Play-by-play','🔍 Historical splits','📊 Full Matchup Lab','🏆 Manager Report'])
+    with history_tab:
+        for line in reversed(g['log'][-20:]):st.write(line)
+    with scout_tab:
+        st.markdown(f"**Batter:** {h['name']} · **Pitcher:** {p['name']}")
+        for side in ('L','R'):
+            rec=observed_batting_split(h,side,g['year'])
+            if rec:
+                ab=int(number(rec.get('atBats')));hits=int(number(rec.get('hits')))
+                st.write(f"Against {throwing(side)}: {hits}/{ab} ({hits/ab:.3f})" if ab else f"Against {throwing(side)}: no AB")
+            else:st.write(f'Against {throwing(side)}: unavailable')
+        if danger(g) and g['mode']!='Hall of Fame':
+            record=h2h(p['id'],h['id'],g['year'])
+            if record:st.write(f"Verified head-to-head: {record.get('hits','—')} hits in {record.get('atBats','—')} AB")
+            else:st.caption('Verified head-to-head unavailable.')
+    with lab_tab:
+        comparisons=compare_pitchers(g)
+        if comparisons:
+            st.dataframe(pd.DataFrame(comparisons).drop(columns=['ID']),hide_index=True,use_container_width=True)
+            if selected:
+                rows=[]
+                for b in next_hitters(g):
+                    cp=estimate(g,p,b);rp=estimate(g,selected,b)
+                    rows.append({'Batter':b['name'],'Current hit %':round(cp[0]*100,1),'Reliever hit %':round(rp[0]*100,1),'Current K %':round(cp[2]*100,1),'Reliever K %':round(rp[2]*100,1)})
+                st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+            st.caption('Lower risk proxy is better in this educational model; it is not probability of runs.')
+    with report_tab:
+        assessment=manager_assessment(g)
+        st.metric('MANAGER GRADE',f"{assessment['letter']} · {assessment['score']}/100")
+        st.caption('Rubric: engagement 20, bullpen decisions 30, situational strategy 30, run prevention 20. Outcomes have only 20% weight.')
+        st.dataframe(pd.DataFrame([{'Category':k,'Points':v} for k,v in assessment['parts'].items()]),hide_index=True,use_container_width=True)
+        for note in assessment['notes']:st.caption('• '+note)
+        for achievement in g['achievements']:st.success('🏅 '+achievement)
+        if g['highlights']:
+            st.markdown('#### Broadcast highlights')
+            for highlight in reversed(g['highlights'][-8:]):st.write(highlight)
+        if g['decisions']:st.dataframe(pd.DataFrame(g['decisions']),hide_index=True,use_container_width=True)
+        if g['strategy_log']:st.dataframe(pd.DataFrame(g['strategy_log']).tail(30),hide_index=True,use_container_width=True)
+        st.caption('Educational grading heuristic, not an objective measure of management skill.')
+        if g['finished']:
+            st.download_button('📄 DOWNLOAD POSTGAME PDF + GRADE',
+                data=make_game_pdf(g,st.session_state.career_name),
+                file_name=f"manager_report_{g['year']}_{g['career_id'][:8]}.pdf",
+                mime='application/pdf',key='game_pdf')
+            st.caption('Your completed game is added to the career summary automatically. Save the career JSON above to keep it across visits.')
+            st.download_button('Export pitching decisions',pd.DataFrame(g['decisions']).to_csv(index=False),'manager_decisions.csv','text/csv')
+    if st.button('🔄 START NEW GAME'):
+        st.session_state.game=None
+        st.session_state.loaded=None
+        st.session_state.selected_relief_id=None
+        st.rerun()
+st.caption('Real MLB historical season statistics; game results, stamina and matchup projections are simulated.')
