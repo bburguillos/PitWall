@@ -263,6 +263,146 @@ def timer_stats(g):
     return last, best, avg, prev, field_avg
 
 
+
+
+def recent_pace(driver, window=3):
+    """Mean of the most recent green-flag laps, excluding major weather changes."""
+    history = driver["history"]
+    if not history:
+        return None
+    # Compare only like-for-like conditions, using the latest weather.
+    current_weather = history[-1]["Weather"]
+    candidates = [h["Time"] for h in history if h["Weather"] == current_weather]
+    if not candidates:
+        return None
+    return mean(candidates[-window:])
+
+
+def engineering_report(g):
+    """Data-grounded advice; forecasts are simplified estimates, not known outcomes."""
+    driver = you(g)
+    cars = ranking(g)
+    index = next(i for i, d in enumerate(cars) if d is driver)
+    remaining = g["total"] - g["lap"]
+    ahead = cars[index - 1] if index > 0 else None
+    behind = cars[index + 1] if index + 1 < len(cars) else None
+    my_pace = recent_pace(driver)
+    wear_limit = expected_life(g, driver["tire"])
+    wear_ratio = driver["age"] / wear_limit
+    messages = []
+    details = []
+    recommendation = "Balanced"
+    pit_advice = "Stay out"
+    urgent = False
+    if not g["entries"]:
+        return {
+            "headline": "Gather baseline data",
+            "reason": "Run a lap to establish your race pace and learn where you stand.",
+            "recommendation": recommendation,
+            "pit": pit_advice,
+            "details": ["Your starting grid is set by qualifying; on-track pace has not yet been measured."],
+            "severity": "info",
+        }
+    if my_pace is not None:
+        details.append(f"Your recent mean: {my_pace:.2f}s/lap (last up to 3 laps in current weather).")
+    if ahead and my_pace is not None:
+        gap = driver["elapsed"] - ahead["elapsed"]
+        rival_pace = recent_pace(ahead)
+        if rival_pace is not None:
+            gain = rival_pace - my_pace
+            if gain > 0.08:
+                laps_to_catch = gap / gain
+                details.append(f"Ahead: {ahead['name']} +{gap:.2f}s; estimated gain {gain:.2f}s/lap.")
+                details.append(f"At unchanged pace, approximate catch-up: {laps_to_catch:.1f} laps (not guaranteed).")
+                if laps_to_catch < remaining and wear_ratio < .72:
+                    messages.append("You are catching the car ahead. Keep your current pace rather than taking unnecessary risks.")
+            elif gain < -0.08:
+                details.append(f"Ahead: {ahead['name']} +{gap:.2f}s; they are faster by approximately {-gain:.2f}s/lap.")
+                messages.append("The car ahead has been faster recently. An alternative tire strategy may help.")
+            else:
+                details.append(f"Ahead: {ahead['name']} +{gap:.2f}s; recent pace is nearly equal.")
+    if behind and my_pace is not None:
+        gap = behind["elapsed"] - driver["elapsed"]
+        rival_pace = recent_pace(behind)
+        if rival_pace is not None:
+            close_rate = my_pace - rival_pace
+            if close_rate > .08:
+                laps_until = gap / close_rate
+                details.append(f"Behind: {behind['name']} +{gap:.2f}s; closing ~{close_rate:.2f}s/lap.")
+                if laps_until <= min(remaining, 4) and wear_ratio < .7:
+                    messages.append(f"The car behind could catch you in about {laps_until:.1f} laps if pace stays constant.")
+                    recommendation = "Push"
+            else:
+                details.append(f"Behind: {behind['name']} +{gap:.2f}s; not closing quickly on current pace.")
+    if g["weather"] == "Wet" and driver["tire"] in DRY:
+        urgent = True
+        pit_advice = "Wet"
+        messages.insert(0, "Heavy rain with dry tires: a wet-weather compound is strongly favored.")
+    elif g["weather"] == "Damp" and driver["tire"] in DRY and wear_ratio >= .5:
+        pit_advice = "Intermediate"
+        messages.insert(0, "The track is damp; intermediates may be worth considering if conditions persist.")
+    elif g["weather"] == "Dry" and driver["tire"] not in DRY:
+        urgent = True
+        pit_advice = "Medium" if remaining <= expected_life(g, "Medium") else "Hard"
+        messages.insert(0, "Dry weather is making wet-weather tires costly. Consider switching to slicks.")
+    elif wear_ratio >= .95 and remaining > 1:
+        urgent = True
+        pit_advice = "Medium" if remaining <= expected_life(g, "Medium") else "Hard"
+        messages.insert(0, "Tires have exceeded most of their expected useful life. Plan a stop.")
+    elif wear_ratio >= .76 and remaining >= 3:
+        recommendation = "Conserve"
+        messages.insert(0, "Tire wear is high. Conserve pace while deciding whether a pit stop pays off.")
+    if not g["was_wet"] and len(set(driver["used"]) & DRY) < 2:
+        next_dry = "Hard" if driver["tire"] != "Hard" else "Medium"
+        if remaining <= 3:
+            urgent = True
+            pit_advice = next_dry
+            messages.insert(0, f"Dry-tire compound requirement: use {next_dry} before finishing.")
+        else:
+            details.append("Dry race: you still need a second dry compound.")
+    if not messages:
+        messages.append("No urgent threat detected. Focus on consistent laps and monitor gaps.")
+    return {
+        "headline": "Pit wall alert" if urgent else "Strategy briefing",
+        "reason": messages[0],
+        "recommendation": recommendation,
+        "pit": pit_advice,
+        "details": details + messages[1:],
+        "severity": "warning" if urgent else "info",
+    }
+
+
+def gap_projection(g, laps=3):
+    """Display recent race pace and simple forward gap scenarios."""
+    driver = you(g)
+    ordered = ranking(g)
+    idx = next(i for i, d in enumerate(ordered) if d is driver)
+    mine = recent_pace(driver)
+    if mine is None:
+        return pd.DataFrame()
+    rows = []
+    for label, other, gap_now in [
+        ("Car ahead", ordered[idx-1] if idx > 0 else None,
+         driver["elapsed"] - ordered[idx-1]["elapsed"] if idx > 0 else None),
+        ("Car behind", ordered[idx+1] if idx+1 < len(ordered) else None,
+         ordered[idx+1]["elapsed"] - driver["elapsed"] if idx+1 < len(ordered) else None),
+    ]:
+        if other is None:
+            continue
+        rival = recent_pace(other)
+        if rival is None:
+            continue
+        closing = rival - mine if label == "Car ahead" else mine - rival
+        rows.append({
+            "Rival": label + ": " + other["name"],
+            "Gap now (s)": round(gap_now, 2),
+            "Your mean (s)": round(mine, 2),
+            "Rival mean (s)": round(rival, 2),
+            "Gain/loss per lap (s)": round(closing, 2),
+            f"Gap after {laps} laps (s)": round(max(0, gap_now - closing * laps), 2),
+        })
+    return pd.DataFrame(rows)
+
 st.title("🏎️ F1: THE PIT WALL")
 st.caption("Sports by the Numbers • 2026 driver names • fictional race performance • simplified track outlines")
 
@@ -370,6 +510,22 @@ with left:
 with right:
     st.markdown("### 🎧 Race engineer")
     st.caption(f"Weather: **{g['weather']}** · Stops: **{mine['stops']}**")
+    engineer = engineering_report(g)
+    with st.container(border=True):
+        st.markdown("**📻 PIT ENGINEER — LIVE STRATEGY**")
+        if engineer["severity"] == "warning":
+            st.warning(engineer["reason"])
+        else:
+            st.info(engineer["reason"])
+        st.caption(f"Suggested pace: **{engineer['recommendation']}** · Pit suggestion: **{engineer['pit']}**")
+        with st.expander("🔬 Why this advice? See the statistics"):
+            for detail in engineer["details"]:
+                st.write("• " + detail)
+            st.caption("Forecasts assume unchanged recent pace and conditions; traffic, pit stops, weather and random variation can change outcomes.")
+            projection = gap_projection(g, min(3, max(1, g["total"] - g["lap"])))
+            if not projection.empty:
+                st.dataframe(projection, hide_index=True, use_container_width=True)
+
     tire_limit = expected_life(g, mine["tire"])
     tire_pct = min(100, round(100 * mine["age"] / tire_limit))
     st.markdown(f"**Tire wear:** {tire_pct}% used · {mine['age']:.1f}/{tire_limit} expected laps")
@@ -427,7 +583,7 @@ with right:
         st.caption("Simplified strategy score; a good choice can still produce a bad race result.")
         st.write("Tire rule:", "✅" if rule_ok else "❌")
         reflection = st.text_area("What would you change next race?")
-        report = f"F1 The Pit Wall\nDriver: {g['player']}\nCircuit: {g['track']}\nFinish: P{position}\nStrategy score: {grade}/100\nMean lap: {stats[2]:.2f}s\nPit stops: {mine['stops']}\nReflection: {reflection}\n"
+        report = f"F1 The Pit Wall\nEngineer advice: {engineer['reason']}\nDriver: {g['player']}\nCircuit: {g['track']}\nFinish: P{position}\nStrategy score: {grade}/100\nMean lap: {stats[2]:.2f}s\nPit stops: {mine['stops']}\nReflection: {reflection}\n"
         st.download_button("Download coaching report", report, "f1_coach_report.txt", "text/plain", use_container_width=True)
     if g["events"]:
         with st.container(border=True):
