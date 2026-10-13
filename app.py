@@ -3,7 +3,7 @@ import random
 import html
 import streamlit as st
 import pandas as pd
-
+import streamlit.components.v1 as components
 st.set_page_config(
     page_title="F1: The Pit Wall",
     page_icon="🏎️",
@@ -455,123 +455,180 @@ def run_lap(game, choice, mode):
         game["events"].append("🏁 Checkered flag!")
 
 
+
 def draw_circuit(game):
-    """Draw an SVG track with simulated car positions."""
+    """Render a circuit and simulated car positions in an HTML iframe."""
 
-    path = TRACKS[game["track"]]["path"]
+    import json
+
+    circuit = TRACKS[game["track"]]
+    path = circuit["path"]
     ranking = order(game)
+    leader_time = ranking[0]["elapsed"]
+    base_lap = circuit["base"]
 
-    leader = ranking[0]["elapsed"]
-    base = TRACKS[game["track"]]["base"]
+    cars = []
 
-    circles = []
+    for position, driver in enumerate(ranking[:12], 1):
+        gap = driver["elapsed"] - leader_time
 
-    # Show the leading 12 cars on the circuit.
-    for index, d in enumerate(ranking[:12]):
-        gap = d["elapsed"] - leader
+        progress = (
+            0.74 + game["lap"] * 0.22 - gap / base_lap
+        ) % 1.0
 
-        phase = (
-            (game["lap"] * .22 + .74 - gap / base) % 1
-        ) * 100
+        cars.append({
+            "name": driver["name"],
+            "position": position,
+            "progress": progress,
+            "color": (
+                "#FF8C24"
+                if driver["name"] == game["player"]
+                else driver["color"]
+            ),
+            "player": driver["name"] == game["player"],
+            "gap": round(gap, 1),
+        })
 
-        color = (
-            "#ff872d"
-            if d["name"] == game["player"]
-            else d["color"]
-        )
+    safe_path = json.dumps(path)
+    safe_cars = json.dumps(cars)
+    safe_title = html.escape(game["track"])
 
-        radius = (
-            7 if d["name"] == game["player"]
-            else 4.2
-        )
-
-        circles.append(f"""
-        <circle r="{radius}"
-            fill="{color}"
-            stroke="#0c1422"
-            stroke-width="1.8">
-            <animateMotion
-                dur="0.001s"
-                fill="freeze"
-                keyTimes="0;1"
-                keyPoints="{phase/100};{phase/100}"
-                calcMode="linear">
-                <mpath href="#route"/>
-            </animateMotion>
-        </circle>
-        """)
-
-    svg = f"""
-    <div style="
-        background:#131f31;
-        padding:12px;
-        border-radius:15px;
-        border:1px solid #354357">
-
-        <div style="
-            color:#eef3fc;
-            font-size:17px;
-            font-weight:700">
-            🗺️ {html.escape(game['track'])} — Race Map
-        </div>
-
-        <div style="
-            color:#acb9ca;
-            font-size:12px">
-            Simulated car positions after lap {game['lap']}.
-        </div>
-
-        <svg viewBox="0 0 380 220"
-            style="
-                width:100%;
-                max-height:320px;
-                background:#0a1421;
-                border-radius:10px">
-
-            <path
-                id="route"
-                d="{path}"
-                fill="none"
-                stroke="#566479"
-                stroke-width="15"
-                stroke-linecap="round"
-                stroke-linejoin="round"/>
-
-            <path
-                d="{path}"
-                fill="none"
-                stroke="#eff2f6"
-                stroke-width="9"
-                stroke-linecap="round"
-                stroke-linejoin="round"/>
-
-            <path
-                d="{path}"
-                fill="none"
-                stroke="#333b49"
-                stroke-width="2"
-                stroke-dasharray="4 5"/>
-
-            {''.join(circles)}
-
-        </svg>
-
-        <div style="
-            color:#ffa368;
-            font-size:12px;
-            font-weight:700">
-            ● Orange = Your driver
-            · Other colors = Other teams
-            · Top 12 shown
-        </div>
+    page = """
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* {
+    box-sizing: border-box;
+}
+body {
+    margin: 0;
+    background: #101a2b;
+    color: white;
+    font-family: Arial, sans-serif;
+}
+.panel {
+    background: #162238;
+    border: 1px solid #344760;
+    border-radius: 16px;
+    padding: 16px;
+}
+h2 {
+    margin: 0 0 6px;
+    font-size: 20px;
+}
+.subtitle {
+    color: #a9bdd2;
+    font-size: 12px;
+}
+svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    background: #0c1626;
+    border-radius: 12px;
+    margin-top: 12px;
+}
+.car {
+    stroke: #050a12;
+    stroke-width: 2;
+}
+.legend {
+    font-size: 12px;
+    color: #bac9db;
+    margin-top: 10px;
+}
+</style>
+</head>
+<body>
+<div class="panel">
+    <h2>🏎️ __TITLE__</h2>
+    <div class="subtitle">
+        Simulated race positions · Top 12 drivers
     </div>
-    """
 
-    if hasattr(st, "html"):
-        st.html(svg)
-    else:
-        st.components.v1.html(svg, height=350)
+    <svg viewBox="0 0 380 220">
+        <path id="track"
+            fill="none"
+            stroke="#39495d"
+            stroke-width="19"
+            stroke-linecap="round"
+            stroke-linejoin="round"/>
 
+        <path id="trackInner"
+            fill="none"
+            stroke="#f3f5f8"
+            stroke-width="12"
+            stroke-linecap="round"
+            stroke-linejoin="round"/>
+
+        <g id="carLayer"></g>
+    </svg>
+
+    <div class="legend">
+        🟠 Your car · Other dots represent rival drivers
+    </div>
+</div>
+
+<script>
+const trackPath = __PATH__;
+const cars = __CARS__;
+
+document.getElementById("track")
+    .setAttribute("d", trackPath);
+
+document.getElementById("trackInner")
+    .setAttribute("d", trackPath);
+
+const track = document.getElementById("track");
+const layer = document.getElementById("carLayer");
+const length = track.getTotalLength();
+
+cars.forEach(function(car) {
+    const point = track.getPointAtLength(
+        car.progress * length
+    );
+
+    const circle = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "circle"
+    );
+
+    circle.setAttribute("cx", point.x);
+    circle.setAttribute("cy", point.y);
+    circle.setAttribute("r", car.player ? 8 : 5);
+    circle.setAttribute("fill", car.color);
+    circle.setAttribute("class", "car");
+
+    const title = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "title"
+    );
+
+    title.textContent =
+        "P" + car.position + " " + car.name +
+        " +" + car.gap + "s";
+
+    circle.appendChild(title);
+    layer.appendChild(circle);
+});
+</script>
+</body>
+</html>
+"""
+
+    page = (
+        page.replace("__TITLE__", safe_title)
+            .replace("__PATH__", safe_path)
+            .replace("__CARS__", safe_cars)
+    )
+
+    components.html(
+        page,
+        height=365,
+        scrolling=False
+    )
 
 def leaderboard(game):
     rows = []
