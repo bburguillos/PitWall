@@ -13,7 +13,23 @@ TRACKS = {
     'Spa — Ardennes': {'base': 105.0, 'pit': 24, 'wear': 1.1, 'start_rain': 0.23},
     'Singapore — Street Circuit': {'base': 102.0, 'pit': 27, 'wear': 1.4, 'start_rain': 0.18},
 }
-DRIVERS = ['YOU · Tiger Racing', 'Apex Motorsport', 'Velocity GP', 'Falcon Racing', 'Orbit F1', 'Comet Autosport']
+# Official 2026 driver/team pairings; performance parameters below are fictional.
+GRID_2026 = [
+ ('George Russell','Mercedes','#27F4D2'), ('Kimi Antonelli','Mercedes','#27F4D2'),
+ ('Charles Leclerc','Ferrari','#E80020'), ('Lewis Hamilton','Ferrari','#E80020'),
+ ('Lando Norris','McLaren','#FF8000'), ('Oscar Piastri','McLaren','#FF8000'),
+ ('Max Verstappen','Red Bull','#3671C6'), ('Isack Hadjar','Red Bull','#3671C6'),
+ ('Liam Lawson','Racing Bulls','#6692FF'), ('Arvid Lindblad','Racing Bulls','#6692FF'),
+ ('Pierre Gasly','Alpine','#FF87BC'), ('Franco Colapinto','Alpine','#FF87BC'),
+ ('Esteban Ocon','Haas','#B6BABD'), ('Oliver Bearman','Haas','#B6BABD'),
+ ('Nico Hulkenberg','Audi','#C4E300'), ('Gabriel Bortoleto','Audi','#C4E300'),
+ ('Carlos Sainz','Williams','#64C4FF'), ('Alex Albon','Williams','#64C4FF'),
+ ('Fernando Alonso','Aston Martin','#229971'), ('Lance Stroll','Aston Martin','#229971'),
+ ('Sergio Perez','Cadillac','#969BA2'), ('Valtteri Bottas','Cadillac','#969BA2'),
+]
+DRIVERS = [d[0] for d in GRID_2026]
+TEAM_BY_DRIVER={name:team for name,team,_ in GRID_2026}
+COLOR_BY_DRIVER={name:color for name,_,color in GRID_2026}
 COLORS = {'Soft':'#ff4c5b','Medium':'#ffd34a','Hard':'#d6dee7','Intermediate':'#51c987','Wet':'#4b96e8'}
 DRY = {'Soft', 'Medium', 'Hard'}
 PACE = {'Soft': -1.15,'Medium': 0.0,'Hard': 0.8,'Intermediate': 2.6,'Wet': 4.9}
@@ -36,18 +52,20 @@ div.stButton > button[kind="primary"] {background:#ff6b24; color:#111; border:0;
 </style>''', unsafe_allow_html=True)
 
 
-def make_game(track_name, laps, seed, start_tire):
+def make_game(track_name, laps, seed, start_tire, chosen_driver):
     rng = random.Random(seed)
     details = TRACKS[track_name]
     rain = rng.random() < details['start_rain']
     drivers = []
-    for i, name in enumerate(DRIVERS):
+    # Selected driver always occupies index 0 for the existing player-control logic.
+    ordered = [chosen_driver] + [n for n in DRIVERS if n != chosen_driver]
+    for i, name in enumerate(ordered):
         tire = start_tire if i == 0 else rng.choice(['Medium','Hard','Soft'])
-        drivers.append(dict(name=name, elapsed=(i * 0.65 if i else 0.0), tire=tire, age=0, stops=0,
+        drivers.append(dict(name=name, team=TEAM_BY_DRIVER[name], color=COLOR_BY_DRIVER[name], elapsed=(rng.uniform(0, 9) if i else 4.5), tire=tire, age=0, stops=0,
                             used=[tire], pace_skill=0.0 if i==0 else rng.uniform(-.75,.9), history=[],
                             plan='Balanced'))
-    return dict(track=track_name, total=laps, lap=0, weather='Wet' if rain else 'Dry',
-                safety=False, seed=seed, drivers=drivers, entries=[], events=[],
+    return dict(player=chosen_driver, track=track_name, total=laps, lap=0, weather='Wet' if rain else 'Dry',
+                safety=False, seed=seed, drivers=drivers, entries=[], snapshots=[], events=[],
                 pending_tire='Stay out', mode='Balanced', saved_decisions=[], finished=False,
                 rain_chance=0.17 if rain else 0.09, forecast='Unsettled' if rain else 'Mostly dry',
                 initial_tire=start_tire)
@@ -115,9 +133,14 @@ def simulate(g, pit_choice, mode):
         d['history'].append(dict(lap=lap_num, time=round(t,2), tire=d['tire'], weather=g['weather'], position=None))
         lap_results.append(t)
     ranking=sorted(g['drivers'],key=lambda d:d['elapsed'])
-    for pos,d in enumerate(ranking,1): d['history'][-1]['position']=pos
-    position=next(i for i,d in enumerate(ranking,1) if d['name']==DRIVERS[0])
+    for pos,d in enumerate(ranking,1):
+        d['history'][-1]['position']=pos
+        d['history'][-1]['elapsed']=round(d['elapsed'],2)
+        d['history'][-1]['stops']=d['stops']
+        d['history'][-1]['team']=d['team']
+    position=next(i for i,d in enumerate(ranking,1) if d['name']==g['player'])
     g['lap']=lap_num
+    g['snapshots'] .append([dict(driver=d['name'],team=d['team'],lap=lap_num,position=d['history'][-1]['position'],lap_time=d['history'][-1]['time'],elapsed=round(d['elapsed'],2),tire=d['tire'],stops=d['stops']) for d in g['drivers']])
     g['entries'].append(dict(lap=lap_num, weather=g['weather'], safety=g['safety'], action=pit_choice,
                              mode=mode, previous_tire=old_tire, previous_age=round(before_age,1),
                              user_time=round(lap_results[0],2), position=position,
@@ -131,7 +154,7 @@ def simulate(g, pit_choice, mode):
 
 def report(g):
     e=g['entries']; user=g['drivers'][0]
-    pos=next(i for i,d in enumerate(sorted(g['drivers'],key=lambda x:x['elapsed']),1) if d['name']==DRIVERS[0])
+    pos=next(i for i,d in enumerate(sorted(g['drivers'],key=lambda x:x['elapsed']),1) if d['name']==g['player'])
     rule_ok=not (g['weather']=='Dry' and len(set(user['used']) & DRY)<2)
     laps=[x['user_time'] for x in e]
     avg=sum(laps)/len(laps) if laps else 0
@@ -149,21 +172,26 @@ def report(g):
     return score,pos,avg,rule_ok,sorted(set(warnings))
 
 
-def draw_positions(g):
+def draw_positions(g, full_grid=False):
     ranking=sorted(g['drivers'],key=lambda d:d['elapsed'])
     leader=ranking[0]['elapsed']
     max_gap=max(max(d['elapsed']-leader for d in ranking),5)
+    player_index=next(i for i,d in enumerate(ranking) if d['name']==g['player'])
+    shown = list(range(len(ranking))) if full_grid else sorted(set(list(range(min(8,len(ranking)))) + list(range(max(0,player_index-2),min(len(ranking),player_index+3)))))
     rows=[]
-    for idx,d in enumerate(ranking,1):
+    for index in shown:
+        d=ranking[index]
         gap=d['elapsed']-leader
         pct=max(4,92-80*gap/max_gap)
-        color='#ff6b24' if d['name']==DRIVERS[0] else '#547ac8'
-        rows.append(f'''<div class="track-line"><span style="width:22px">P{idx}</span>
-          <span style="width:142px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{d['name']}</span>
+        color='#ff6b24' if d['name']==g['player'] else d['color']
+        label=f"{d['name']} · {d['team']}"
+        rows.append(f'''<div class="track-line" style="{'border-left:3px solid #ff6b24;padding-left:5px' if d['name']==g['player'] else ''}"><span style="width:30px">P{index+1}</span>
+          <span title="{label}" style="width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{d['name']}</span>
           <div class="track-bar"><div class="car" style="left:{pct-4:.1f}%;background:{color}">🏎️</div></div>
-          <span style="width:78px;text-align:right">{'+%.1fs'%gap if gap else 'LEADER'}</span></div>''')
+          <span style="width:76px;text-align:right">{'+%.1fs'%gap if gap else 'LEADER'}</span>
+          <span style="width:24px;color:{COLORS[d['tire']]};text-align:center">●</span></div>''')
     st.markdown('<div class="track">' + ''.join(rows) + '</div>',unsafe_allow_html=True)
-
+    if not full_grid and len(shown)<len(ranking): st.caption('Showing top eight plus your nearest rivals; turn on Full grid for all 22.')
 
 st.markdown('<div class="head"><div style="font-size:0.8rem;color:#ffa66d;letter-spacing:2px;font-weight:800">SPORTS BY THE NUMBERS • RACE STRATEGY LAB</div><h1 style="margin:1px 0 0">🏎️ F1: THE PIT WALL</h1><div class="small">Make the call. Read the data. Beat the field.</div></div>',unsafe_allow_html=True)
 
@@ -176,26 +204,28 @@ if st.session_state.game is None:
     with a: circuit=st.selectbox('Circuit',list(TRACKS))
     with b: laps=st.slider('Race length (laps)',8,30,14,2)
     with c: first=st.selectbox('Starting tyre',['Medium','Soft','Hard'])
+    chosen=st.selectbox('Choose your 2026 F1 driver',DRIVERS,format_func=lambda n:f'{n} — {TEAM_BY_DRIVER[n]}')
     st.info('Classroom simulation: tracks have approximate fictional baseline lap times, and competitors, probabilities, tyre wear, weather, and race events are simulated—not live F1 data. No account or API key needed.')
     if st.button('🏁 START GRAND PRIX', type='primary',use_container_width=True):
-        st.session_state.game=make_game(circuit,laps,random.SystemRandom().randrange(10**9),first)
+        st.session_state.game=make_game(circuit,laps,random.SystemRandom().randrange(10**9),first,chosen)
         st.rerun()
     st.stop()
 
 g=st.session_state.game
 user=g['drivers'][0]
 ranking=sorted(g['drivers'],key=lambda d:d['elapsed'])
-position=next(i for i,d in enumerate(ranking,1) if d['name']==DRIVERS[0])
+position=next(i for i,d in enumerate(ranking,1) if d['name']==g['player'])
 
 header=st.columns([1,1,1,1,1])
 for col,label,value in zip(header,['LAP','POSITION','WEATHER','YOUR TYRES','PIT STOPS'],
-                           [f"{g['lap']} / {g['total']}",f'P{position} / 6',g['weather'],f"{user['tire']} · {user['age']:.0f} laps",user['stops']]):
+                           [f"{g['lap']} / {g['total']}",f'P{position} / 22',g['weather'],f"{user['tire']} · {user['age']:.0f} laps",user['stops']]):
     with col: st.metric(label,value)
 
 left,right=st.columns([1.55,1],gap='medium')
 with left:
     st.markdown('### 🏁 Live Race Tracker')
-    draw_positions(g)
+    full_grid=st.toggle('Show all 22 drivers',value=False)
+    draw_positions(g,full_grid)
     if g['entries']:
         last=g['entries'][-1]
         st.caption(f"Last lap: {last['user_time']:.2f}s  •  Strategy: {last['mode']}  •  P{last['position']}  •  {'Safety car' if last['safety'] else 'Green flag'}")
@@ -205,7 +235,21 @@ with left:
         df=pd.DataFrame(g['entries'])
         chart_df=df.set_index('lap')[['user_time']]
         st.line_chart(chart_df,height=168)
-        with st.expander('Lap-by-lap data table'):
+        st.markdown('### 📉 Position changes by lap')
+        selected=st.multiselect('Drivers on position chart',DRIVERS,default=[g['player']]+[d['name'] for d in ranking if d['name']!=g['player']][:4])
+        pos_rows=[{'Lap':h['lap'],'Driver':d['name'],'Position':h['position']} for d in g['drivers'] for h in d['history'] if d['name'] in selected]
+        if pos_rows:
+            chart=pd.DataFrame(pos_rows).pivot(index='Lap',columns='Driver',values='Position').sort_index()
+            st.line_chart(chart,height=225)
+            st.caption('Lower finishing position number is better (P1 is first). Follow the lines to see gains and losses after a pit stop.')
+        with st.expander('⏪ Lap replay — all 22 drivers', expanded=True):
+            replay_lap=st.slider('Replay completed lap',min_value=1,max_value=g['lap'],value=g['lap'],key='replay_lap')
+            latest=pd.DataFrame(g['snapshots'][replay_lap-1]).sort_values('position')
+            leader_time=float(latest['elapsed'].min())
+            latest['gap_to_leader']=latest['elapsed'].apply(lambda t: f'+{t-leader_time:.1f}s' if t>leader_time else 'LEADER')
+            st.dataframe(latest[['position','driver','team','lap_time','gap_to_leader','tire','stops']],hide_index=True,use_container_width=True)
+            st.download_button('Download all-driver lap timing (.csv)',pd.DataFrame([row for lap in g['snapshots'] for row in lap]).to_csv(index=False),file_name='f1_full_grid_timing.csv',mime='text/csv')
+        with st.expander('Your lap-by-lap decisions'):
             st.dataframe(df[['lap','user_time','position','weather','safety','action','mode','gap']],use_container_width=True,hide_index=True)
     else:
         st.caption('Drive the first lap to see your times and race position change.')
@@ -239,7 +283,7 @@ with right:
             for w in warnings: st.warning(w)
         reflection=st.text_area('Student reflection: What decision would you change and why?',key='reflection',height=88)
         text_report=(f"F1: THE PIT WALL — COACH REPORT\nCircuit: {g['track']}\nLaps: {g['total']}\n"
-                     f"Position: P{pos} of 6\nStrategy score: {score}/100\nAvg lap: {avg:.2f}s\n"
+                     f"Driver: {g['player']} ({TEAM_BY_DRIVER[g['player']]})\nPosition: P{pos} of 22\nStrategy score: {score}/100\nAvg lap: {avg:.2f}s\n"
                      f"Pit stops: {user['stops']}\nTyres used: {', '.join(user['used'])}\n"
                      f"Two dry compounds satisfied: {rule_ok}\nReflection: {reflection}\n\n"
                      + '\n'.join(f"Lap {x['lap']}: {x['user_time']:.2f}s; {x['weather']}; P{x['position']}; pit {x['action']}; {x['mode']}" for x in g['entries']))
@@ -256,5 +300,4 @@ with right:
         st.rerun()
 
 st.divider()
-st.caption('Teaching model only • fictional teams/drivers, calibrated for strategy practice rather than historical accuracy • general two-dry-compound rule simplified: Monaco and several official race exceptions are not modeled • dry/wet conditions may change. Source: FIA 2026 Sporting Regulations, Article B6.3.6.')
-
+st.caption('Teaching model only • real 2026 driver/team names but fictional performance data, calibrated for strategy practice rather than historical accuracy • general two-dry-compound rule simplified: Monaco and several official race exceptions are not modeled • dry/wet conditions may change. Source: FIA 2026 Sporting Regulations, Article B6.3.6.')
