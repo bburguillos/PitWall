@@ -531,98 +531,92 @@ if g["stage"] == "qualifying":
 
 ordered = ranking(g)
 position = next(i for i, d in enumerate(ordered, 1) if d is mine)
-metrics = st.columns(7)
-labels = ["LAP", "POSITION", "LAST LAP", "MEAN LAP", "BEST LAP", "TO CAR AHEAD", "TIRE"]
 stats = timer_stats(g)
 ahead, behind = proximity(g)
+engineer = engineering_report(g)
+
+# Compact control tower: critical actions are in the first screen.
+st.markdown("""<style>
+.block-container {padding-top:.3rem !important; max-width:1800px !important}
+h1 {font-size:1.5rem !important; margin:0 !important; padding:0 !important}
+h3 {font-size:1.05rem !important; margin:.15rem 0 !important; padding:0 !important}
+[data-testid="stMetric"] {padding:5px 8px !important; min-height:64px !important}
+[data-testid="stMetricValue"] {font-size:1.18rem !important}
+[data-testid="stMetricLabel"] {font-size:.68rem !important}
+[data-testid="stVerticalBlock"] {gap:.45rem !important}
+[data-testid="stHorizontalBlock"] {gap:.55rem !important}
+div[data-testid="stRadio"] label {padding:0 !important}
+div.stButton > button[kind="primary"] {min-height:48px; font-size:1.05rem}
+</style>""", unsafe_allow_html=True)
+
+labels = ["LAP", "POSITION", "LAST", "MEAN", "BEST", "GAP AHEAD", "TIRE"]
 values = [f"{g['lap']}/{g['total']}", f"P{position}/22",
           f"{stats[0]:.2f}s" if stats else "—",
           f"{stats[2]:.2f}s" if stats else "—",
           f"{stats[1]:.2f}s" if stats else "—",
           f"{ahead[1]:.2f}s" if ahead else "LEADER",
           f"{TIRE_SYMBOL[mine['tire']]} {mine['tire']}"]
-for box, label, val in zip(metrics, labels, values):
-    box.metric(label, val)
+for col, label, value in zip(st.columns(7, gap="small"), labels, values):
+    col.metric(label, value)
 
-left, right = st.columns([1.42, 1.0], gap="medium")
-with left:
+# Three primary panels keep everything needed to run a lap on screen.
+track_col, timing_col, control_col = st.columns([1.08, 1.04, 1.08], gap="small")
+
+with track_col:
+    st.markdown("### 🗺️ Circuit tracker")
     circuit_map(g)
-    if stats:
-        last, best, avg, prev, field_avg = stats
-        diff_prev = f"{last-prev:+.2f}s vs previous" if prev is not None else "First racing lap"
-        diff_mean = f"{avg-field_avg:+.2f}s vs other drivers' means"
-        st.caption(f"**Last lap change:** {diff_prev} (− means faster) · **Mean vs field:** {diff_mean}")
-    tabs = st.tabs(["⏱️ Lap comparison", "🏎️ Timing tower", "📋 Qualifying & replay"])
-    with tabs[0]:
-        if g["entries"]:
-            df = pd.DataFrame(g["entries"])
-            if len(df) >= 2:
-                st.line_chart(df.set_index("Lap")[["Time"]], height=165)
-            recent = df.copy()
-            recent["Δ vs last"] = recent["Time"].diff().map(lambda x: f"{x:+.2f}s" if pd.notna(x) else "—")
-            recent = recent.sort_values("Lap", ascending=False)
-            st.dataframe(recent[["Lap", "Time", "Δ vs last", "Pos", "Gap", "Tire", "PitLoss"]].head(8), hide_index=True, use_container_width=True, height=250)
-        else: st.info("Run lap 1 to start the lap-time comparison.")
-    with tabs[1]:
-        lead = ordered[0]["elapsed"]
-        tower = pd.DataFrame([{"P": i, "Driver": ("★ " if d is mine else "") + d["name"], "Team": d["team"], "Gap": "LEADER" if i == 1 else f"+{d['elapsed']-lead:.1f}s", "Tire": TIRE_SYMBOL[d["tire"]], "Stops": d["stops"]} for i, d in enumerate(ordered, 1)])
-        st.dataframe(tower, use_container_width=True, hide_index=True, height=330)
-    with tabs[2]:
-        st.write("**Starting grid**")
-        st.dataframe(pd.DataFrame(g["qual_results"]), hide_index=True, use_container_width=True, height=170)
-        if g["lap"]:
-            if g["lap"] == 1:
-                replay = 1
-                st.caption("Replay slider unlocks after lap 2.")
-            else: replay = st.slider("Replay lap", 1, g["lap"], g["lap"])
-            st.dataframe(pd.DataFrame(g["snapshots"][replay-1]), hide_index=True, use_container_width=True, height=220)
-            st.download_button("Download all timing CSV", pd.DataFrame([r for s in g["snapshots"] for r in s]).to_csv(index=False), "f1_race_timing.csv", "text/csv")
-
-with right:
-    st.markdown("### 🎧 Race engineer")
-    st.caption(f"Track: **{g['weather']}** · Stops: **{mine['stops']}**")
-    with st.container(border=True):
-        forecast_display(g)
-        if g["weather_history"]:
-            with st.expander("Weather forecast accuracy · past laps"):
-                st.dataframe(pd.DataFrame(g["weather_history"][::-1]), hide_index=True, use_container_width=True, height=170)
-    engineer = engineering_report(g)
-    with st.container(border=True):
-        st.markdown("**📻 PIT ENGINEER — LIVE STRATEGY**")
-        if engineer["severity"] == "warning":
-            st.warning(engineer["reason"])
-        else:
-            st.info(engineer["reason"])
-        st.caption(f"Suggested pace: **{engineer['recommendation']}** · Pit suggestion: **{engineer['pit']}**")
-        st.caption("🌦️ Forecast note: " + weather_strategy(g)[1])
-        with st.expander("🔬 Why this advice? See the statistics"):
-            for detail in engineer["details"]:
-                st.write("• " + detail)
-            st.caption("Forecasts assume unchanged recent pace and conditions; traffic, pit stops, weather and random variation can change outcomes.")
-            projection = gap_projection(g, min(3, max(1, g["total"] - g["lap"])))
-            if not projection.empty:
-                st.dataframe(projection, hide_index=True, use_container_width=True)
-
-    tire_limit = expected_life(g, mine["tire"])
-    tire_pct = min(100, round(100 * mine["age"] / tire_limit))
-    st.markdown(f"**Tire wear:** {tire_pct}% used · {mine['age']:.1f}/{tire_limit} expected laps")
-    st.progress(tire_pct / 100)
-    if tire_pct >= 85:
-        st.warning("Tires near or beyond expected life — consider a stop.")
-    with st.expander("🛞 Expected tire life on this circuit"):
-        st.caption("Illustrative ranges at balanced pace, not official Pirelli predictions.")
-        st.dataframe(pd.DataFrame([{"Compound": TIRE_SYMBOL[t] + " " + t, "Expected laps": f"~{expected_life(g,t)}"} for t in TIRE_LIFE]), hide_index=True, use_container_width=True)
+    st.markdown("**🏎️ Nearest rivals**")
     if ahead:
-        st.caption(f"⬆ Ahead: {ahead[0]} · **{ahead[1]:.2f}s** | " + (f"⬇ Behind: {behind[0]} · **{behind[1]:.2f}s**" if behind else "No car behind"))
+        st.caption(f"⬆ {ahead[0]} · **{ahead[1]:.2f}s ahead**")
     else:
-        st.caption("🥇 Race leader | " + (f"Next car behind: {behind[0]} · {behind[1]:.2f}s" if behind else ""))
+        st.caption("🥇 You're currently leading")
+    if behind:
+        st.caption(f"⬇ {behind[0]} · **{behind[1]:.2f}s behind**")
+    st.markdown("**🛞 Tire wear**")
+    life = expected_life(g, mine["tire"])
+    wear_percent = min(100, round(100 * mine["age"] / life))
+    st.progress(wear_percent / 100, text=f"{wear_percent}% used · {mine['age']:.1f}/{life} expected laps")
+
+with timing_col:
+    st.markdown("### 📊 Live timing")
+    rows = []
+    leader = ordered[0]["elapsed"]
+    for i, d in enumerate(ordered, 1):
+        rows.append({"P":i,"Driver":("★ " if d is mine else "")+d["name"],
+                     "Gap": "LEAD" if i == 1 else f"+{d['elapsed']-leader:.1f}",
+                     "Tire":TIRE_SYMBOL[d["tire"]]})
+    # Show the nearest cars, and all cars in the detailed tab below.
+    lo = max(0, position - 4)
+    hi = min(22, max(8, position + 3))
+    st.dataframe(pd.DataFrame(rows[lo:hi]), use_container_width=True,
+                 hide_index=True, height=232)
+    st.markdown("**⏱️ Latest lap comparisons**")
+    if g["entries"]:
+        df = pd.DataFrame(g["entries"])
+        df["Change"] = df["Time"].diff().map(lambda x: f"{x:+.2f}s" if pd.notna(x) else "—")
+        df = df.sort_values("Lap", ascending=False)
+        st.dataframe(df[["Lap", "Time", "Change", "Pos"]].head(4),
+                     hide_index=True, use_container_width=True, height=177)
+    else:
+        st.caption("Run lap 1 to see the latest lap at the top.")
+
+with control_col:
+    st.markdown("### 🎧 Pit wall controls")
+    next_lap = g["lap"] + 1
+    outlook = rain_outlook(g)
+    if outlook:
+        st.caption("🌦️ " + " · ".join(f"L{lap} **{prob:.0%}** rain" for lap,prob in outlook[:3]) + f" · Track: **{g['weather']}**")
+    st.caption(f"📻 **Engineer:** {engineer['reason']}")
+    st.caption(f"Suggested: **{engineer['recommendation']}** · Tires: **{engineer['pit']}**")
+
     if not g["finished"]:
-        next_lap = g["lap"] + 1
-        st.write(f"**Plan lap {next_lap} of {g['total']}**")
-        mode = st.radio("Pace", ["Balanced", "Push", "Conserve"], horizontal=True, key=f"mode_{next_lap}")
-        pit_choice = st.selectbox("Pit decision", ["Stay out", "Soft", "Medium", "Hard", "Intermediate", "Wet"], key=f"pit_{next_lap}")
+        st.markdown(f"**PLAN LAP {next_lap} / {g['total']}**")
+        mode = st.radio("Driving pace", ["Balanced", "Push", "Conserve"],
+                        horizontal=True, key=f"mode_{next_lap}")
+        pit_choice = st.selectbox("Tire / pit decision",
+                    ["Stay out", "Soft", "Medium", "Hard", "Intermediate", "Wet"],
+                    key=f"pit_{next_lap}")
         if pit_choice == "Stay out":
-            # No pit challenge for laps without a pit stop.
             if g["pit_challenge"] is not None:
                 g["pit_challenge"] = None
             if st.button("▶ RUN NEXT LAP", type="primary", use_container_width=True):
@@ -631,43 +625,70 @@ with right:
         else:
             ch = g["pit_challenge"]
             if ch is None or ch["lap"] != next_lap:
-                if st.button("🔧 START PIT-CREW CHALLENGE", type="primary", use_container_width=True):
-                    g["pit_challenge"] = {"lap": next_lap, "targets": new_targets(g), "started": time.monotonic()}
+                if st.button("🔧 START PIT STOP", type="primary", use_container_width=True):
+                    g["pit_challenge"] = {"lap":next_lap,"targets":new_targets(g),"started":time.monotonic()}
                     st.rerun()
-                st.caption("Hit three alignment marks quickly and accurately. Precision and speed determine pit-stop time.")
             else:
-                st.markdown("**🔧 Pit stop minigame: align the equipment!**")
-                st.caption("Match each orange target with its slider, then press COMPLETE PIT STOP.")
+                st.caption("Match three slider targets to complete your pit stop.")
                 answers = []
-                for i, (label, target) in enumerate(zip(["Front jack", "Left wheel", "Right wheel"], ch["targets"])):
-                    st.caption(f"{label} · TARGET {target}")
-                    answers.append(st.slider(label, 0, 100, 50, key=f"pit_align_{next_lap}_{i}", label_visibility="collapsed"))
+                for i,(label,target) in enumerate(zip(["Front jack","Left wheel","Right wheel"],ch["targets"])):
+                    answers.append(st.slider(f"{label} · target {target}",0,100,50,key=f"pit_align_{next_lap}_{i}"))
                 if st.button("✅ COMPLETE PIT STOP & RUN LAP", type="primary", use_container_width=True):
-                    elapsed = time.monotonic() - ch["started"]
-                    stationary, grade = pit_quality(ch["targets"], answers, elapsed)
-                    sim_lap(g, pit_choice, mode, stationary)
-                    g["events"].insert(0, f"🏆 Pit crew: {grade} · {stationary:.2f}s stationary · {elapsed:.1f}s challenge time")
+                    elapsed = time.monotonic()-ch["started"]
+                    stationary,grade = pit_quality(ch["targets"], answers, elapsed)
+                    sim_lap(g,pit_choice,mode,stationary)
+                    g["events"].insert(0,f"Pit crew: {grade} · {stationary:.2f}s stationary")
                     st.rerun()
-                if st.button("Cancel challenge"):
+                if st.button("Cancel pit stop"):
                     g["pit_challenge"] = None
                     st.rerun()
         if not g["was_wet"] and len(set(mine["used"]) & DRY) < 2:
-            st.info("Strategy goal: use 2 different dry compounds in a dry race.")
+            st.caption("⚠️ Dry race: plan to use two different dry compounds.")
     else:
-        rule_ok = g["was_wet"] or len(set(mine["used"]) & DRY) >= 2
-        grade = max(0, 100 - (0 if rule_ok else 25) - max(0, mine["stops"] - 3) * 5)
+        rule_ok = g["was_wet"] or len(set(mine["used"]) & DRY)>=2
+        grade=max(0,100-(0 if rule_ok else 25)-max(0,mine["stops"]-3)*5)
         st.success(f"🏁 Finished P{position} · Strategy score {grade}/100")
-        st.caption("Simplified strategy score; a good choice can still produce a bad race result.")
-        st.write("Tire rule:", "✅" if rule_ok else "❌")
-        reflection = st.text_area("What would you change next race?")
-        report = f"F1 The Pit Wall\nEngineer advice: {engineer['reason']}\nDriver: {g['player']}\nCircuit: {g['track']}\nFinish: P{position}\nStrategy score: {grade}/100\nMean lap: {stats[2]:.2f}s\nPit stops: {mine['stops']}\nReflection: {reflection}\n"
-        st.download_button("Download coaching report", report, "f1_coach_report.txt", "text/plain", use_container_width=True)
+        reflection=st.text_area("What would you change next time?")
+        report=(f"F1 The Pit Wall\nDriver: {g['player']}\nCircuit: {g['track']}\n"
+                f"Finish: P{position}\nStrategy score: {grade}\n"
+                f"Mean lap: {stats[2]:.2f}s\nPit stops: {mine['stops']}\nReflection: {reflection}\n")
+        st.download_button("Download coach report",report,"f1_coach_report.txt","text/plain",use_container_width=True)
     if g["events"]:
-        with st.container(border=True):
-            st.markdown("**📻 Race control**")
-            for event in g["events"][:3]: st.caption(event)
+        st.caption("📻 " + " | ".join(g["events"][:2]))
     if st.button("🔄 New race", use_container_width=True):
         st.session_state.pit_wall_v3 = None
         st.rerun()
 
-st.caption("Educational simulation: driver names are real; race outcomes, forecasts, tire choices and probabilities are simulated. Forecast chance does not guarantee rain. Race tracker updates each lap.")
+# Secondary screens: no need to scroll here during ordinary racing.
+st.divider()
+full_timing, lap_data, weather_tab, strategy_tab = st.tabs([
+    "🏎️ Full timing", "📈 Lap history", "🌦️ Weather radar", "🧠 Engineer & analysis"
+])
+with full_timing:
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True, height=425)
+    st.dataframe(pd.DataFrame(g["qual_results"]), hide_index=True, use_container_width=True, height=180)
+with lap_data:
+    if g["entries"]:
+        df = pd.DataFrame(g["entries"])
+        st.line_chart(df.set_index("Lap")[["Time"]], height=235)
+        st.dataframe(df.sort_values("Lap",ascending=False), hide_index=True,use_container_width=True,height=250)
+        if g["lap"] > 1:
+            replay = st.slider("Replay lap",1,g["lap"],g["lap"])
+            st.dataframe(pd.DataFrame(g["snapshots"][replay-1]),hide_index=True,use_container_width=True)
+        st.download_button("Download all timing",pd.DataFrame([r for snap in g["snapshots"] for r in snap]).to_csv(index=False),"f1_race_timing.csv","text/csv")
+with weather_tab:
+    forecast_display(g)
+    if g["weather_history"]:
+        st.dataframe(pd.DataFrame(g["weather_history"][::-1]),hide_index=True,use_container_width=True)
+with strategy_tab:
+    st.write(engineer["reason"])
+    for detail in engineer["details"]:
+        st.write("• " + detail)
+    st.write("**Projected future gaps**")
+    projection = gap_projection(g, min(3,max(1,g["total"]-g["lap"])))
+    if not projection.empty:
+        st.dataframe(projection,hide_index=True,use_container_width=True)
+    st.write("**Estimated tire life**")
+    st.dataframe(pd.DataFrame([{"Tire":TIRE_SYMBOL[t]+" "+t,"Expected laps":expected_life(g,t)} for t in TIRE_LIFE]),hide_index=True,use_container_width=True)
+
+st.caption("Educational simulation: race performance and forecasts are fictional. Circuit markers update every simulated lap.")
