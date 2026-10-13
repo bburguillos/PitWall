@@ -2,6 +2,7 @@ import html
 import json
 import random
 import time
+import math
 from statistics import mean, median
 
 import pandas as pd
@@ -133,7 +134,9 @@ def new_game(track, laps, player_name):
                 forecast=build_forecast(seed, track, laps), weather_history=[],
                 stage="qualifying", lap=0, weather="Dry", was_wet=False,
                 safety=False, drivers=drivers, events=[], entries=[],
-                snapshots=[], qual_results=[], pit_challenge=None, finished=False, qual_practice=None, qual_score=None)
+                snapshots=[], qual_results=[], pit_challenge=None, finished=False, qual_practice=None, qual_score=None,
+                start_at=None, lights_out_at=None, launch_result=None, start_delay=0.0,
+                race_log=[], engineer_choices=[], sector_data=None, incidents=[], strategy_notes=[], championship_awarded=False)
 
 
 def ranking(g):
@@ -142,6 +145,119 @@ def ranking(g):
 
 def you(g):
     return next(d for d in g["drivers"] if d["name"] == g["player"])
+
+
+def sector_reference(g):
+    """Simulated sector times for a small data-driven qualifying decision."""
+    rng = random.Random(f"sectors-{g['seed']}")
+    base = TRACKS[g["track"]][0] / 3
+    return [round(base + rng.uniform(-1.4, 1.4), 2) for _ in range(3)]
+
+
+def start_lights(g):
+    rng = random.Random(f"startlights-{g['seed']}")
+    now = time.time()
+    g["start_at"] = now
+    g["lights_out_at"] = now + 5 * 0.65 + rng.uniform(0.75, 2.1)
+    g["stage"] = "start"
+
+
+def register_launch(g):
+    now = time.time()
+    delta = now - g["lights_out_at"]
+    if delta < 0:
+        result, penalty = "JUMP START — +5 seconds", 5.0
+    elif delta < 0.25:
+        result, penalty = f"EXCELLENT REACTION — {delta:.2f}s", -0.45
+    elif delta < 0.55:
+        result, penalty = f"GOOD START — {delta:.2f}s", -0.15
+    elif delta < 1.2:
+        result, penalty = f"CLEAN START — {delta:.2f}s", 0.12
+    else:
+        result, penalty = f"SLOW START — {delta:.2f}s", min(2.5, .12 + (delta - 1.2) * .4)
+    you(g)["elapsed"] += penalty
+    g["start_delay"] = round(penalty, 3)
+    g["launch_result"] = result
+    g["events"] = ["🚦 " + result]
+    g["stage"] = "race"
+
+
+# Fragment keeps the five lights refreshing without rerendering the entire dashboard.
+# Timings include browser/network latency and are NOT competition-grade measurements.
+@st.fragment(run_every=0.2)
+def light_challenge(g):
+    now = time.time()
+    elapsed = now - g["start_at"]
+    illuminated = min(5, max(0, int(elapsed / 0.65) + 1))
+    if now >= g["lights_out_at"]:
+        illuminated = 0
+    lights = " ".join("🔴" if i < illuminated else "⚫" for i in range(5))
+    st.markdown(f"<div style='font-size:2.3rem;text-align:center;padding:10px;background:#14253b;border-radius:14px'>{lights}</div>", unsafe_allow_html=True)
+    st.caption("Five red lights, then LIGHTS OUT. Avoid an early click! Browser/network delay affects measured reaction time.")
+    if now >= g["lights_out_at"]:
+        st.success("LIGHTS OUT — GO!")
+    elif illuminated == 5:
+        st.warning("All five lights on. Wait until they go out!")
+    else:
+        st.info(f"Lights illuminated: {illuminated}/5")
+    if st.button("🚀 LAUNCH!", type="primary", use_container_width=True):
+        register_launch(g)
+        st.rerun()
+
+
+def overtake_outcome(g, mode, tactic, rng, events):
+    """Risk/reward adjustment; position still comes from elapsed race times."""
+    me = you(g)
+    cars = ranking(g)
+    idx = next(i for i, d in enumerate(cars) if d is me)
+    ahead = cars[idx-1] if idx else None
+    behind = cars[idx+1] if idx+1 < len(cars) else None
+    if tactic == "Attack" and ahead:
+        gap = me["elapsed"] - ahead["elapsed"]
+        if gap <= 2.5:
+            wear = min(1.5, me["age"] / max(1, expected_life(g, me["tire"])))
+            chance = min(.78, max(.13, .58 - .14 * gap - .10 * wear + (.10 if mode == "Push" else 0)))
+            success = rng.random() < chance
+            if success:
+                me["elapsed"] -= gap + rng.uniform(.09, .32)
+                events.append(f"🏎️ OVERTAKE: Attack worked ({chance:.0%} estimate)!")
+            else:
+                me["elapsed"] += rng.uniform(.2, .9)
+                events.append(f"🏎️ Attack failed ({chance:.0%} estimate); time lost")
+        else:
+            events.append("Attack selected, but rival is too far away for a passing attempt")
+    elif tactic == "Defend" and behind:
+        gap = behind["elapsed"] - me["elapsed"]
+        if gap < 2.0:
+            me["elapsed"] -= .16
+            me["age"] += .25
+            events.append("🛡️ Defensive driving: slight time advantage, extra tire wear")
+        else:
+            events.append("Defend selected; no immediate threat behind")
+
+
+def incident_outcome(g, rng, events):
+    """Low-frequency events. Red flags cause a neutralized lap with no racing advantage."""
+    roll = rng.random()
+    if roll < .025:
+        events.append("🟥 RED FLAG: race neutralized; everyone loses similar time")
+        for d in g["drivers"]:
+            d["elapsed"] += 35.0
+        g["incidents"].append({"Lap": g["lap"]+1, "Event": "Red flag"})
+    elif roll < .07:
+        events.append("🟨 Yellow flags after an incident: drivers slow down")
+        for d in g["drivers"]:
+            d["elapsed"] += 6.0
+        g["incidents"].append({"Lap": g["lap"]+1, "Event": "Yellow flag"})
+
+
+def championship_table(history):
+    points = [25,18,15,12,10,8,6,4,2,1]
+    total = {name:0 for name,_,_ in GRID}
+    for race in history:
+        for position, name in enumerate(race["finish"], 1):
+            if position <= 10: total[name] += points[position - 1]
+    return pd.DataFrame([{"Driver":n, "Team":TEAM[n], "Points":pt} for n,pt in total.items()]).sort_values(["Points","Driver"], ascending=[False, True])
 
 
 def qualify(g, mode, tire, accuracy_score=0):
@@ -162,8 +278,8 @@ def qualify(g, mode, tire, accuracy_score=0):
     # Racing offsets use grid gaps, not raw qualifying lap-time differences.
     for i, d in enumerate(order):
         d["elapsed"] = i * 1.25
-    g["stage"] = "race"
-    g["events"] = ["🏁 Qualifying complete! The starting grid is set."]
+    start_lights(g)
+    g["events"] = ["🏁 Qualifying complete! Get ready for five red lights."]
 
 
 # Estimated useful tire life: classroom model, not manufacturer data.
@@ -217,7 +333,7 @@ def pit_quality(targets, answers, elapsed_seconds):
     return round(stationary, 2), grade
 
 
-def sim_lap(g, pit_tire, mode, stationary=None):
+def sim_lap(g, pit_tire, mode, stationary=None, tactic="Balanced", engineer_follow=False):
     lap = g["lap"] + 1
     rng = random.Random(f"race-{g['seed']}-{lap}")
     base, pit_loss, wear, _, _ = TRACKS[g["track"]]
@@ -275,6 +391,8 @@ def sim_lap(g, pit_tire, mode, stationary=None):
         d["age"] += {"Push": 1.65, "Balanced": 1., "Conserve": .62}[style]
         d["elapsed"] += lap_time
         d["history"].append({"Lap": lap, "Time": round(lap_time, 2), "Tire": compound, "Weather": conditions})
+    incident_outcome(g, rng, events)
+    overtake_outcome(g, mode, tactic, rng, events)
     ranked = ranking(g)
     leader = ranked[0]["elapsed"]
     for i, d in enumerate(ranked, 1): d["history"][-1]["Position"] = i
@@ -282,9 +400,10 @@ def sim_lap(g, pit_tire, mode, stationary=None):
     g["snapshots"].append([dict(Lap=lap, Pos=i, Driver=d["name"], Team=d["team"], Gap=round(d["elapsed"]-leader, 2), Tire=d["tire"], Stops=d["stops"], Time=d["history"][-1]["Time"]) for i, d in enumerate(ranked, 1)])
     g["entries"].append(dict(Lap=lap, Time=driver["history"][-1]["Time"], Pos=position,
                              Gap=round(driver["elapsed"]-leader, 2), Tire=driver["tire"],
-                             Drive=mode, Pit=pit_tire, PitLoss=round(actual_pit, 2), Weather=g["weather"], RainChance=f"{rain_chance:.0%}", SafetyCar=g["safety"]))
+                             Drive=mode, Pit=pit_tire, PitLoss=round(actual_pit, 2), Tactic=tactic, FollowEngineer=engineer_follow, Weather=g["weather"], RainChance=f"{rain_chance:.0%}", SafetyCar=g["safety"]))
     g["lap"], g["events"] = lap, events
     g["pit_challenge"] = None
+    g["engineer_choices"].append({"Lap":lap,"Followed recommendation":engineer_follow,"Tactic":tactic,"Driving pace":mode,"Tires":pit_tire})
     if lap >= g["total"]:
         g["finished"] = True
         g["events"].append("🏁 Chequered flag — race complete!")
@@ -473,7 +592,7 @@ def gap_projection(g, laps=3):
         })
     return pd.DataFrame(rows)
 
-st.title("🏎️ F1: THE PIT WALL")
+st.title("🏎️ F1: THE PIT WALL · V8")
 st.caption("Sports by the Numbers • 2026 driver names • fictional race performance • simplified track outlines")
 
 if "pit_wall_v3" not in st.session_state:
@@ -486,6 +605,7 @@ if st.session_state.pit_wall_v3 is None:
     track = a.selectbox("Circuit", list(TRACKS))
     laps = b.slider("Race laps", 8, 30, 14)
     driver = c.selectbox("Your driver", [d[0] for d in GRID], format_func=lambda n: f"{n} · {TEAM[n]}")
+    st.info("🚦 This weekend includes interactive sector qualifying and a five-red-lights reaction start. No repeated statistics quiz.")
     st.info("🌦️ This circuit's simulated rain climate: " + f"{TRACKS[track][3]:.0%} baseline. During the race, a changing probabilistic weather forecast will influence tire strategy.")
     st.markdown("**Estimated useful laps per tire at this circuit**")
     st.dataframe(pd.DataFrame([{"Tire": TIRE_SYMBOL[t] + " " + t, "Expected useful laps": expected_life({"track": track}, t)} for t in TIRE_LIFE]), hide_index=True, use_container_width=True)
@@ -497,36 +617,36 @@ if st.session_state.pit_wall_v3 is None:
 g = st.session_state.pit_wall_v3
 mine = you(g)
 if g["stage"] == "qualifying":
-    st.subheader(f"⏱️ Interactive qualifying · {g['track']}")
-    st.caption("Analyze five practice laps to earn a small qualifying bonus, then set your flying-lap strategy.")
-    if g["qual_practice"] is None:
-        g["qual_practice"] = qualifying_practice(g)
-    practice = g["qual_practice"]
-    st.markdown("**Practice lap times (seconds):** " + "  ·  ".join(f"{x:.1f}" for x in practice))
-    q1, q2, q3, q4 = st.columns(4)
-    with q1: answer_mean = st.number_input("Mean (s)", min_value=0.0, value=0.0, step=0.1, format="%.2f")
-    with q2: answer_median = st.number_input("Median (s)", min_value=0.0, value=0.0, step=0.1, format="%.2f")
-    with q3: answer_mode = st.number_input("Mode (s)", min_value=0.0, value=0.0, step=0.1, format="%.2f")
-    with q4: answer_range = st.number_input("Range (s)", min_value=0.0, value=0.0, step=0.1, format="%.2f")
-    if g["qual_score"] is None:
-        if st.button("✅ CHECK MY STATISTICS", type="primary", use_container_width=True):
-            score, solutions = evaluate_qualifying(practice, [answer_mean, answer_median, answer_mode, answer_range])
-            g["qual_score"] = score
-            g["qual_solutions"] = solutions
-            st.rerun()
-    else:
-        solutions = g["qual_solutions"]
-        st.success(f"Statistics challenge: {g['qual_score']}/4 correct. Qualifying benefit: {g['qual_score'] * .12:.2f}s.")
-        st.caption("Solutions: Mean {:.2f}s · Median {:.1f}s · Mode {:.1f}s · Range {:.1f}s".format(*solutions))
-        c1, c2 = st.columns(2)
-        qtire = c1.radio("Qualifying tire", ["Soft", "Medium", "Hard"], horizontal=True)
-        qmode = c2.radio("Qualifying pace", ["Push", "Balanced", "Conserve"], horizontal=True)
-        if st.button("🏁 COMPLETE FLYING LAP & SET GRID", type="primary", use_container_width=True):
-            qualify(g, qmode, qtire, g["qual_score"])
-            st.rerun()
-    if st.button("Start over"):
+    st.subheader(f"⏱️ Qualifying · {g['track']}")
+    st.caption("Choose how to approach your flying lap. Compare the three practice sectors and identify where the biggest improvement is possible.")
+    if g["sector_data"] is None:
+        g["sector_data"] = sector_reference(g)
+    sectors = g["sector_data"]
+    cols = st.columns(3)
+    for i, col in enumerate(cols):
+        col.metric(f"Practice sector {i+1}", f"{sectors[i]:.2f}s")
+    slow = max(range(3), key=lambda i: sectors[i])
+    with st.form("qualifying_strategy"):
+        focus = st.radio("Where would you focus on finding lap time?", ["Sector 1", "Sector 2", "Sector 3"], horizontal=True)
+        tire = st.radio("Qualifying compound", ["Soft","Medium","Hard"], horizontal=True)
+        mode = st.radio("Qualifying attack mode", ["Balanced","Push","Conserve"], horizontal=True)
+        st.caption("Statistic tip: the highest sector time is the slowest sector, although the most improvement is not always guaranteed there.")
+        submit = st.form_submit_button("🏁 SET FLYING LAP & QUALIFY", type="primary", use_container_width=True)
+    if submit:
+        correct = (int(focus[-1])-1) == slow
+        g["qual_score"] = int(correct)
+        qualify(g, mode, tire, int(correct))
+        st.rerun()
+    if st.button("New weekend"):
         st.session_state.pit_wall_v3 = None
         st.rerun()
+    st.stop()
+
+if g["stage"] == "start":
+    st.subheader("🚦 GRAND PRIX START · FIVE RED LIGHTS")
+    st.write(f"**{g['player']} — Starting grid position P" + str(next(i for i, d in enumerate(sorted(g['drivers'],key=lambda d:d['qual']),1) if d['name']==g['player'])))
+    st.caption("Your launch reaction changes your initial race time. Early launches incur a five-second penalty.")
+    light_challenge(g)
     st.stop()
 
 ordered = ranking(g)
@@ -613,6 +733,8 @@ with control_col:
         st.markdown(f"**PLAN LAP {next_lap} / {g['total']}**")
         mode = st.radio("Driving pace", ["Balanced", "Push", "Conserve"],
                         horizontal=True, key=f"mode_{next_lap}")
+        tactic = st.radio("Track battle", ["Balanced", "Attack", "Defend"], horizontal=True, key=f"battle_{next_lap}")
+        follow = st.checkbox("Follow engineer recommendation", value=False, key=f"follow_{next_lap}", help="Documents your decision for the report card; you can still choose your own controls.")
         pit_choice = st.selectbox("Tire / pit decision",
                     ["Stay out", "Soft", "Medium", "Hard", "Intermediate", "Wet"],
                     key=f"pit_{next_lap}")
@@ -620,7 +742,7 @@ with control_col:
             if g["pit_challenge"] is not None:
                 g["pit_challenge"] = None
             if st.button("▶ RUN NEXT LAP", type="primary", use_container_width=True):
-                sim_lap(g, "Stay out", mode)
+                sim_lap(g, "Stay out", mode, tactic=tactic, engineer_follow=follow)
                 st.rerun()
         else:
             ch = g["pit_challenge"]
@@ -636,7 +758,7 @@ with control_col:
                 if st.button("✅ COMPLETE PIT STOP & RUN LAP", type="primary", use_container_width=True):
                     elapsed = time.monotonic()-ch["started"]
                     stationary,grade = pit_quality(ch["targets"], answers, elapsed)
-                    sim_lap(g,pit_choice,mode,stationary)
+                    sim_lap(g,pit_choice,mode,stationary,tactic=tactic,engineer_follow=follow)
                     g["events"].insert(0,f"Pit crew: {grade} · {stationary:.2f}s stationary")
                     st.rerun()
                 if st.button("Cancel pit stop"):
@@ -648,10 +770,18 @@ with control_col:
         rule_ok = g["was_wet"] or len(set(mine["used"]) & DRY)>=2
         grade=max(0,100-(0 if rule_ok else 25)-max(0,mine["stops"]-3)*5)
         st.success(f"🏁 Finished P{position} · Strategy score {grade}/100")
+        if not g["championship_awarded"]:
+            if "f1_championship" not in st.session_state:
+                st.session_state.f1_championship = []
+            st.session_state.f1_championship.append({"track":g["track"],"finish":[d["name"] for d in ranking(g)]})
+            g["championship_awarded"] = True
+        st.caption(f"Championship weekends recorded: {len(st.session_state.f1_championship)}")
         reflection=st.text_area("What would you change next time?")
         report=(f"F1 The Pit Wall\nDriver: {g['player']}\nCircuit: {g['track']}\n"
                 f"Finish: P{position}\nStrategy score: {grade}\n"
                 f"Mean lap: {stats[2]:.2f}s\nPit stops: {mine['stops']}\nReflection: {reflection}\n")
+        report += (f"Launch: {g['launch_result']}\nWeather history: {g['weather_history']}\n"
+                   f"Strategy decisions: {g['engineer_choices']}\n")
         st.download_button("Download coach report",report,"f1_coach_report.txt","text/plain",use_container_width=True)
     if g["events"]:
         st.caption("📻 " + " | ".join(g["events"][:2]))
@@ -661,8 +791,8 @@ with control_col:
 
 # Secondary screens: no need to scroll here during ordinary racing.
 st.divider()
-full_timing, lap_data, weather_tab, strategy_tab = st.tabs([
-    "🏎️ Full timing", "📈 Lap history", "🌦️ Weather radar", "🧠 Engineer & analysis"
+full_timing, lap_data, weather_tab, strategy_tab, season_tab = st.tabs([
+    "🏎️ Full timing", "📈 Lap history", "🌦️ Weather radar", "🧠 Engineer & analysis", "🏆 Championship"
 ])
 with full_timing:
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True, height=425)
@@ -684,6 +814,41 @@ with strategy_tab:
     st.write(engineer["reason"])
     for detail in engineer["details"]:
         st.write("• " + detail)
+    st.markdown("**🎧 Ask your engineer**")
+    question = st.selectbox("Race question", [
+        "Can I catch the car ahead?",
+        "Should I pit soon?",
+        "How many laps can these tires last?",
+        "What if I pit now (undercut)?",
+        "Should I follow the weather forecast?",
+    ], key="engineer_question")
+    mydriver = you(g)
+    front, back = proximity(g)
+    if question == "Can I catch the car ahead?":
+        if front and g["lap"]:
+            rival = next(d for d in g["drivers"] if d["name"] == front[0])
+            my_mean, rival_mean = recent_pace(mydriver), recent_pace(rival)
+            gain = (rival_mean - my_mean) if my_mean is not None and rival_mean is not None else 0
+            if gain > .05:
+                st.info(f"Gap: {front[1]:.2f}s. You gain about {gain:.2f}s/lap. Estimate: {front[1]/gain:.1f} laps to catch if pace remains similar.")
+            else:
+                st.info(f"Gap: {front[1]:.2f}s. Recent pace does not support predicting that you'll catch the next car without a change.")
+        else:
+            st.info("No car ahead, or not enough laps to compare yet.")
+    elif question == "Should I pit soon?":
+        life = expected_life(g, mydriver["tire"])
+        st.info(f"Your tire age is {mydriver['age']:.1f}/{life} expected laps. {engineer['reason']} Typical pit loss is roughly {TRACKS[g['track']][1]:.0f}s, plus or minus stop execution and neutralizations.")
+    elif question == "How many laps can these tires last?":
+        life = expected_life(g, mydriver["tire"])
+        st.info(f"Estimated remaining useful life: {max(0,life-mydriver['age']):.1f} laps at comparable wear. Push mode increases wear; this estimate is not a hard failure threshold.")
+    elif question == "What if I pit now (undercut)?":
+        pit_loss = TRACKS[g["track"]][1]
+        fresh_advantage = max(.1, mydriver["age"] * TIRE_WEAR[mydriver["tire"]] * TRACKS[g["track"]][2] + .45)
+        recover = pit_loss / fresh_advantage
+        st.info(f"A new tire might save ~{fresh_advantage:.2f}s/lap compared with your worn current tire. Recovering a normal ~{pit_loss:.1f}s pit loss would then take ~{recover:.1f} laps. This is a simplified undercut estimate, not a guarantee: rivals may pit too, and the weather may change.")
+    else:
+        head, advice = weather_strategy(g)
+        st.info(f"{head}: {advice} Look at probability rather than assuming rain is certain.")
     st.write("**Projected future gaps**")
     projection = gap_projection(g, min(3,max(1,g["total"]-g["lap"])))
     if not projection.empty:
@@ -691,4 +856,18 @@ with strategy_tab:
     st.write("**Estimated tire life**")
     st.dataframe(pd.DataFrame([{"Tire":TIRE_SYMBOL[t]+" "+t,"Expected laps":expected_life(g,t)} for t in TIRE_LIFE]),hide_index=True,use_container_width=True)
 
-st.caption("Educational simulation: race performance and forecasts are fictional. Circuit markers update every simulated lap.")
+with season_tab:
+    races = st.session_state.get("f1_championship", [])
+    if races:
+        st.dataframe(championship_table(races), hide_index=True, use_container_width=True, height=350)
+        st.caption("Official-style points (25–18–15–12–10–8–6–4–2–1). Standings persist within this app session only.")
+    else:
+        st.caption("Finish a race to begin the championship.")
+    if g["entries"]:
+        times = [row["Time"] for row in g["entries"]]
+        st.markdown(f"**Your data:** Mean {mean(times):.2f}s · Median {median(times):.2f}s · Range {max(times)-min(times):.2f}s")
+        st.write("**Reflection:** Which decision was supported by data? Which result might have been due to luck?")
+    if g["incidents"]:
+        st.dataframe(pd.DataFrame(g["incidents"]), hide_index=True)
+
+st.caption("Educational simulator: qualifying, start lights, weather, overtakes and race incidents use simplified or simulated data. Reaction timing includes network latency.")
