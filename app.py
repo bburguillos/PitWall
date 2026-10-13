@@ -1,34 +1,102 @@
 
-import streamlit as st
 import random
-import math
+import html
+import streamlit as st
 import pandas as pd
 
 st.set_page_config(
-    page_title="F1: The Pit Wall | Sports by the Numbers",
+    page_title="F1: The Pit Wall",
     page_icon="🏎️",
     layout="wide",
-    initial_sidebar_state="collapsed",
 )
 
+# Circuit outlines are simplified approximations.
+# Race performance and lap times are simulated.
+
 TRACKS = {
-    "Monza — Speed Temple": {
-        "base": 83.0, "pit": 21, "wear": 1.0, "start_rain": 0.07
+    "Monza, Italy": {
+        "base": 83.0,
+        "pit": 21.0,
+        "wear": 1.0,
+        "rain": .07,
+        "path": "M 75 45 L 105 35 L 137 83 L 175 123 L 216 133 L 295 134 L 328 142 L 328 157 L 277 159 L 209 157 L 135 157 Q 109 155 100 139 L 89 104 L 68 69 Z",
     },
-    "Silverstone — Fast Corners": {
-        "base": 91.5, "pit": 23, "wear": 1.22, "start_rain": 0.19
+    "Silverstone, United Kingdom": {
+        "base": 91.5,
+        "pit": 23.0,
+        "wear": 1.2,
+        "rain": .18,
+        "path": "M 55 82 L 116 37 Q 126 31 138 44 L 200 90 L 200 136 L 236 151 L 260 126 L 265 76 Q 279 59 295 77 L 310 108 L 313 156 L 266 171 L 240 156 L 210 179 L 177 168 L 126 144 L 73 113 Z",
     },
-    "Spa — Ardennes": {
-        "base": 105.0, "pit": 24, "wear": 1.1, "start_rain": 0.23
+    "Spa-Francorchamps, Belgium": {
+        "base": 105.0,
+        "pit": 24.0,
+        "wear": 1.12,
+        "rain": .25,
+        "path": "M 56 173 L 88 133 L 127 94 L 170 69 L 213 44 L 240 53 L 268 37 L 301 65 L 313 92 L 286 78 L 257 65 L 233 76 L 202 93 L 194 118 L 227 135 L 253 158 L 246 184 L 209 167 L 172 138 L 131 146 L 95 164 Z",
     },
-    "Singapore — Street Circuit": {
-        "base": 102.0, "pit": 27, "wear": 1.4, "start_rain": 0.18
+    "Singapore": {
+        "base": 102.0,
+        "pit": 27.0,
+        "wear": 1.4,
+        "rain": .18,
+        "path": "M 59 106 L 96 50 L 125 75 L 141 61 L 190 95 L 250 100 L 255 39 L 273 47 L 281 91 L 289 130 L 270 163 L 225 165 L 197 151 L 145 150 L 100 143 L 83 167 L 62 145 Z",
+    },
+    "Bahrain": {
+        "base": 94.0,
+        "pit": 23.0,
+        "wear": 1.1,
+        "rain": .02,
+        "path": "M 65 149 L 87 36 L 118 71 L 155 84 L 126 114 L 207 114 L 240 47 L 264 69 L 300 151 Z",
+    },
+    "Suzuka, Japan": {
+        "base": 92.0,
+        "pit": 23.0,
+        "wear": 1.15,
+        "rain": .22,
+        "path": "M 46 63 Q 78 110 118 108 L 142 70 L 156 121 L 181 115 Q 201 74 224 96 L 278 155 Q 294 187 311 175 Q 321 165 288 138 L 245 89 Q 209 50 184 87 L 157 101 Q 135 105 112 85 Q 85 66 81 38 Q 52 31 46 63 Z",
+    },
+    "Monaco": {
+        "base": 77.0,
+        "pit": 26.0,
+        "wear": 1.08,
+        "rain": .14,
+        "path": "M 50 160 Q 50 108 83 79 L 137 35 L 193 70 L 218 91 L 256 93 Q 280 92 287 67 L 318 57 L 325 81 L 294 100 Q 263 139 232 124 L 172 94 L 132 62 Q 102 49 78 99 L 63 168 Z",
+    },
+    "Interlagos, Brazil": {
+        "base": 72.0,
+        "pit": 22.0,
+        "wear": 1.12,
+        "rain": .25,
+        "path": "M 74 78 Q 106 49 147 48 Q 181 41 188 67 L 182 95 Q 221 46 244 55 Q 266 68 245 100 L 285 129 L 271 158 Q 223 150 199 122 L 164 103 L 131 151 Q 98 173 73 148 Q 48 117 74 78 Z",
+    },
+    "Las Vegas, USA": {
+        "base": 94.0,
+        "pit": 22.0,
+        "wear": .9,
+        "rain": .04,
+        "path": "M 65 151 L 95 98 L 113 102 L 113 43 L 133 37 L 151 67 L 278 67 L 268 35 L 284 36 L 309 73 L 310 156 L 153 156 L 105 136 Z",
+    },
+    "Montreal, Canada": {
+        "base": 76.0,
+        "pit": 22.0,
+        "wear": 1.05,
+        "rain": .20,
+        "path": "M 57 72 L 135 79 L 180 102 L 215 124 L 248 137 L 273 117 L 304 125 L 286 150 L 241 158 L 208 146 L 176 131 L 133 93 Z",
+    },
+    "Miami, USA": {
+        "base": 90.0,
+        "pit": 22.0,
+        "wear": 1.0,
+        "rain": .15,
+        "path": "M 56 62 L 299 62 L 293 89 L 309 98 L 293 112 L 249 109 Q 208 158 162 157 L 117 142 Q 90 115 60 136 L 51 117 Q 71 88 113 108 L 164 131 L 194 115 L 114 74 Z",
     },
 }
 
-# Real 2026 drivers and teams.
-# Performance numbers are fictional for classroom simulation.
-GRID_2026 = [
+# Real 2026 driver and team names.
+# Driver performance ratings are fictional.
+
+GRID = [
     ("George Russell", "Mercedes", "#27F4D2"),
     ("Kimi Antonelli", "Mercedes", "#27F4D2"),
     ("Charles Leclerc", "Ferrari", "#E80020"),
@@ -53,939 +121,864 @@ GRID_2026 = [
     ("Valtteri Bottas", "Cadillac", "#969BA2"),
 ]
 
-DRIVERS = [d[0] for d in GRID_2026]
-TEAM_BY_DRIVER = {name: team for name, team, _ in GRID_2026}
-COLOR_BY_DRIVER = {name: color for name, _, color in GRID_2026}
+TEAMS = {n: t for n, t, c in GRID}
+COLORS = {n: c for n, t, c in GRID}
 
-COLORS = {
-    "Soft": "#ff4c5b",
-    "Medium": "#ffd34a",
-    "Hard": "#d6dee7",
-    "Intermediate": "#51c987",
-    "Wet": "#4b96e8",
-}
 DRY = {"Soft", "Medium", "Hard"}
 
-PACE = {
-    "Soft": -1.15,
+BASE_TIRE = {
+    "Soft": -1.1,
     "Medium": 0.0,
-    "Hard": 0.8,
+    "Hard": 0.65,
     "Intermediate": 2.6,
-    "Wet": 4.9,
+    "Wet": 4.5,
 }
-WEAR = {
-    "Soft": 0.28,
-    "Medium": 0.14,
-    "Hard": 0.072,
-    "Intermediate": 0.15,
-    "Wet": 0.12,
+
+WEAR_RATE = {
+    "Soft": .28,
+    "Medium": .14,
+    "Hard": .075,
+    "Intermediate": .17,
+    "Wet": .13,
+}
+
+TIRE_ICON = {
+    "Soft": "🔴",
+    "Medium": "🟡",
+    "Hard": "⚪",
+    "Intermediate": "🟢",
+    "Wet": "🔵",
 }
 
 st.markdown("""
 <style>
 .stApp {
-    background: #090f1c;
-    color: #eaf0fa;
+    background: #0c1422;
+    color: #e8edf5;
 }
 .block-container {
-    padding-top: 0.8rem;
-    padding-bottom: 3rem;
-    max-width: 1540px;
-}
-h1, h2, h3 {
-    color: #fff !important;
+    padding-top: 1rem;
+    max-width: 1500px;
 }
 [data-testid="stMetric"] {
-    background: #151e31;
-    border: 1px solid #273248;
+    background: #19253a;
+    padding: 12px;
     border-radius: 12px;
-    padding: 10px 16px;
+    border: 1px solid #36445a;
 }
 div.stButton > button[kind="primary"] {
-    background: #ff6b24;
-    color: #111;
-    border: 0;
-    font-weight: 800;
-}
-.head {
-    padding: 16px 22px;
-    border-radius: 14px;
-    background: linear-gradient(120deg,#141f32,#232031);
-    border-left: 7px solid #ff6b24;
-    margin-bottom: 12px;
-}
-.track {
-    background: #121b2b;
-    border: 1px solid #303b50;
-    border-radius: 16px;
-    padding: 15px 18px;
-}
-.track-line {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 5px 0;
-    font-size: 0.89rem;
-}
-.track-bar {
-    position: relative;
-    height: 22px;
-    background: #283349;
-    border-radius: 15px;
-    flex: 1;
-    overflow: hidden;
-}
-.car {
-    position: absolute;
-    top: 2px;
-    height: 18px;
-    min-width: 46px;
-    border-radius: 9px;
-    background: #5c86fd;
-    color: #fff;
-    font-size: 11px;
-    text-align: center;
-    font-weight: bold;
+    background: #ff782e;
+    color: #101820;
+    font-weight: 900;
 }
 </style>
 """, unsafe_allow_html=True)
 
 
-def make_game(track_name, laps, seed, start_tire, chosen_driver):
+def create_game(track, laps, name, tire):
+    seed = random.SystemRandom().randrange(10**9)
     rng = random.Random(seed)
-    details = TRACKS[track_name]
-    rain = rng.random() < details["start_rain"]
 
-    ordered = [chosen_driver] + [
-        name for name in DRIVERS if name != chosen_driver
-    ]
-
+    ordered = sorted(GRID, key=lambda x: rng.random())
     drivers = []
 
-    for i, name in enumerate(ordered):
-        tire = start_tire if i == 0 else rng.choice(
-            ["Medium", "Hard", "Soft"]
+    for index, (driver, team, color) in enumerate(ordered):
+        current_tire = (
+            tire if driver == name
+            else rng.choice(["Medium", "Hard", "Soft"])
         )
 
-        drivers.append({
-            "name": name,
-            "team": TEAM_BY_DRIVER[name],
-            "color": COLOR_BY_DRIVER[name],
-            "elapsed": rng.uniform(0, 9) if i else 4.5,
-            "tire": tire,
-            "age": 0,
-            "stops": 0,
-            "used": [tire],
-            "pace_skill": 0.0 if i == 0 else rng.uniform(-0.75, 0.9),
-            "history": [],
-        })
+        drivers.append(dict(
+            name=driver,
+            team=team,
+            color=color,
+            elapsed=index * 1.25,
+            tire=current_tire,
+            age=0.,
+            used=[current_tire],
+            stops=0,
+            skill=rng.uniform(-.7, .7),
+            history=[],
+        ))
 
-    return {
-        "player": chosen_driver,
-        "track": track_name,
-        "total": laps,
-        "lap": 0,
-        "weather": "Wet" if rain else "Dry",
-        "safety": False,
-        "seed": seed,
-        "drivers": drivers,
-        "entries": [],
-        "snapshots": [],
-        "events": [],
-        "finished": False,
-        "initial_tire": start_tire,
-    }
-
-
-def new_weather(g, rng):
-    previous = g["weather"]
-    change = rng.random()
-
-    if previous == "Dry" and change < 0.085:
-        g["weather"] = "Damp"
-    elif previous == "Damp" and change < 0.33:
-        g["weather"] = "Wet"
-    elif previous == "Damp" and change > 0.69:
-        g["weather"] = "Dry"
-    elif previous == "Wet" and change > 0.74:
-        g["weather"] = "Damp"
-
-    if g["weather"] != previous:
-        g["events"].append(
-            f"🌦️ Conditions: {previous} → {g['weather']}"
-        )
-
-
-def lap_time(g, driver, rng, mode, under_sc):
-    circuit = TRACKS[g["track"]]
-    tire = driver["tire"]
-    weather = g["weather"]
-    age = driver["age"]
-
-    baseline = (
-        circuit["base"]
-        + PACE[tire]
-        + WEAR[tire] * age * circuit["wear"]
-    )
-
-    penalty = 0.0
-
-    if weather == "Dry":
-        if tire == "Intermediate":
-            penalty = 6.0
-        elif tire == "Wet":
-            penalty = 10.0
-
-    elif weather == "Damp":
-        if tire in DRY:
-            penalty = 3.8 + 0.08 * age
-        elif tire == "Wet":
-            penalty = 2.0
-
-    elif weather == "Wet":
-        if tire in DRY:
-            penalty = 13.5
-        elif tire == "Intermediate":
-            penalty = 2.0
-
-    baseline += penalty + driver["pace_skill"]
-
-    if mode == "Push":
-        baseline -= 0.75
-        driver["age"] += 1.65
-    elif mode == "Conserve":
-        baseline += 0.65
-        driver["age"] += 0.62
-    else:
-        driver["age"] += 1
-
-    if under_sc:
-        baseline = baseline * 1.27 + 3
-
-    return max(
-        1.0,
-        baseline + rng.gauss(0, 0.15 if under_sc else 0.36)
+    return dict(
+        seed=seed,
+        track=track,
+        total=laps,
+        lap=0,
+        player=name,
+        weather="Dry",
+        was_wet=False,
+        safety=False,
+        drivers=drivers,
+        snapshots=[],
+        entries=[],
+        events=[],
+        finished=False,
     )
 
 
-def simulate(g, pit_choice, mode):
-    if g["finished"]:
+def order(game):
+    return sorted(
+        game["drivers"],
+        key=lambda d: d["elapsed"]
+    )
+
+
+def run_lap(game, choice, mode):
+    if game["finished"]:
         return
 
-    lap_num = g["lap"] + 1
-    rng = random.Random(f"{g['seed']}:{lap_num}")
+    lap = game["lap"] + 1
+    rng = random.Random(f"{game['seed']}-{lap}")
+    settings = TRACKS[game["track"]]
+    events = []
 
-    g["events"] = []
-    new_weather(g, rng)
+    prev = game["weather"]
+    r = rng.random()
 
-    g["safety"] = rng.random() < 0.11
+    if prev == "Dry" and r < settings["rain"] * .55:
+        game["weather"] = "Damp"
+    elif prev == "Damp" and r < .30:
+        game["weather"] = "Wet"
+    elif prev == "Damp" and r > .71:
+        game["weather"] = "Dry"
+    elif prev == "Wet" and r > .72:
+        game["weather"] = "Damp"
 
-    if g["safety"]:
-        g["events"].append(
-            "🚨 SAFETY CAR! Pit loss is reduced."
+    if game["weather"] != prev:
+        events.append(
+            f"🌦️ Weather: {prev} → {game['weather']}"
         )
 
-    pit_loss = TRACKS[g["track"]]["pit"] * (
-        0.53 if g["safety"] else 1
+    if game["weather"] != "Dry":
+        game["was_wet"] = True
+
+    safety = rng.random() < .09
+    game["safety"] = safety
+
+    if safety:
+        events.append(
+            "🚨 Safety car: reduced pit-stop time loss"
+        )
+
+    pit_loss = settings["pit"] * (
+        .55 if safety else 1.
     )
 
-    user = g["drivers"][0]
-    before_age = user["age"]
-    old_tire = user["tire"]
+    player = next(
+        d for d in game["drivers"]
+        if d["name"] == game["player"]
+    )
 
-    if pit_choice != "Stay out":
-        user["elapsed"] += pit_loss
-        user["tire"] = pit_choice
-        user["age"] = 0
-        user["used"].append(pit_choice)
-        user["stops"] += 1
+    if choice != "Stay out":
+        player["elapsed"] += pit_loss
+        player.update(tire=choice, age=0.)
+        player["used"].append(choice)
+        player["stops"] += 1
 
-        g["events"].append(
-            f"🔧 Pitted for {pit_choice} (+{pit_loss:.1f}s)"
+        events.append(
+            f"🔧 Your pit stop: {choice} (+{pit_loss:.1f}s)"
         )
 
-    lap_results = []
+    for driver in game["drivers"]:
+        if driver is not player:
+            remaining = game["total"] - lap
 
-    for i, d in enumerate(g["drivers"]):
-        this_mode = (
-            mode if i == 0
-            else "Push" if rng.random() < 0.23
-            else "Balanced"
-        )
-
-        if i > 0:
-            t = d["tire"]
-            w = g["weather"]
-            remaining = g["total"] - lap_num
-
-            must_switch = (
-                remaining <= 2
-                and w == "Dry"
-                and len(set(d["used"]) & DRY) < 2
-            )
+            worn = driver["age"] > {
+                "Soft": 12,
+                "Medium": 20,
+                "Hard": 31,
+                "Intermediate": 14,
+                "Wet": 18,
+            }[driver["tire"]]
 
             wrong = (
-                (w == "Wet" and t not in ("Wet", "Intermediate"))
-                or (w == "Dry" and t not in DRY)
+                game["weather"] == "Wet"
+                and driver["tire"] in DRY
             )
 
-            old = d["age"] > (
-                12 if t == "Soft"
-                else 20 if t == "Medium"
-                else 31
+            wrong = wrong or (
+                game["weather"] == "Dry"
+                and driver["tire"] not in DRY
             )
 
-            if must_switch or wrong or (old and remaining > 3):
-                next_tire = (
-                    "Wet" if w == "Wet"
-                    else "Intermediate" if w == "Damp"
-                    else "Hard" if t != "Hard"
+            needs_second = (
+                remaining <= 2
+                and not game["was_wet"]
+                and len(set(driver["used"]) & DRY) < 2
+            )
+
+            if (
+                (worn and remaining > 2)
+                or wrong
+                or needs_second
+            ):
+                target = (
+                    "Wet" if game["weather"] == "Wet"
+                    else "Intermediate"
+                    if game["weather"] == "Damp"
+                    else "Hard"
+                    if driver["tire"] != "Hard"
                     else "Medium"
                 )
 
-                d["elapsed"] += pit_loss
-                d["tire"] = next_tire
-                d["age"] = 0
-                d["used"].append(next_tire)
-                d["stops"] += 1
+                driver["elapsed"] += pit_loss
+                driver.update(tire=target, age=0.)
+                driver["used"].append(target)
+                driver["stops"] += 1
 
-        t = lap_time(g, d, rng, this_mode, g["safety"])
-        d["elapsed"] += t
+        tire = driver["tire"]
 
-        d["history"].append({
-            "lap": lap_num,
-            "time": round(t, 2),
-            "tire": d["tire"],
-            "weather": g["weather"],
-            "position": None,
-        })
+        style = (
+            mode if driver is player
+            else rng.choices(
+                ["Conserve", "Balanced", "Push"],
+                [2, 6, 2]
+            )[0]
+        )
 
-        lap_results.append(t)
+        penalty = 0.
 
-    ranking = sorted(
-        g["drivers"],
-        key=lambda d: d["elapsed"]
-    )
+        if game["weather"] == "Dry":
+            penalty = {
+                "Intermediate": 6,
+                "Wet": 10,
+            }.get(tire, 0)
 
-    for pos, d in enumerate(ranking, 1):
-        d["history"][-1].update({
-            "position": pos,
-            "elapsed": round(d["elapsed"], 2),
-            "stops": d["stops"],
-            "team": d["team"],
-        })
-
-    position = next(
-        i for i, d in enumerate(ranking, 1)
-        if d["name"] == g["player"]
-    )
-
-    g["lap"] = lap_num
-
-    g["snapshots"].append([
-        {
-            "driver": d["name"],
-            "team": d["team"],
-            "lap": lap_num,
-            "position": d["history"][-1]["position"],
-            "lap_time": d["history"][-1]["time"],
-            "elapsed": round(d["elapsed"], 2),
-            "tire": d["tire"],
-            "stops": d["stops"],
-        }
-        for d in g["drivers"]
-    ])
-
-    g["entries"].append({
-        "lap": lap_num,
-        "weather": g["weather"],
-        "safety": g["safety"],
-        "action": pit_choice,
-        "mode": mode,
-        "previous_tire": old_tire,
-        "previous_age": round(before_age, 1),
-        "user_time": round(lap_results[0], 2),
-        "position": position,
-        "gap": round(
-            user["elapsed"] - ranking[0]["elapsed"], 2
-        ),
-    })
-
-    if lap_num >= g["total"]:
-        g["finished"] = True
-
-        if (
-            g["weather"] == "Dry"
-            and len(set(user["used"]) & DRY) < 2
-        ):
-            g["events"].append(
-                "⚠️ Two dry tire compounds were not used."
+        elif game["weather"] == "Damp":
+            penalty = (
+                3.8 if tire in DRY
+                else 2 if tire == "Wet"
+                else 0
             )
+
         else:
-            g["events"].append(
-                "🏁 CHECKERED FLAG! Race complete."
+            penalty = (
+                13.5 if tire in DRY
+                else 2 if tire == "Intermediate"
+                else 0
             )
 
+        style_delta = {
+            "Push": -.75,
+            "Balanced": 0.,
+            "Conserve": .65,
+        }[style]
 
-def report(g):
-    entries = g["entries"]
-    user = g["drivers"][0]
+        wear_step = {
+            "Push": 1.65,
+            "Balanced": 1.,
+            "Conserve": .62,
+        }[style]
 
-    ranking = sorted(
-        g["drivers"],
-        key=lambda d: d["elapsed"]
-    )
+        duration = (
+            settings["base"]
+            + BASE_TIRE[tire]
+            + driver["age"]
+            * WEAR_RATE[tire]
+            * settings["wear"]
+            + penalty
+            + style_delta
+            + driver["skill"]
+            + rng.gauss(0, .3)
+        )
+
+        if safety:
+            duration = duration * 1.27 + 3
+
+        driver["age"] += wear_step
+        driver["elapsed"] += duration
+
+        driver["history"].append(dict(
+            lap=lap,
+            lap_time=round(duration, 2),
+            tire=tire,
+            elapsed=round(driver["elapsed"], 2),
+        ))
+
+    ranking = order(game)
+
+    for position, driver in enumerate(ranking, 1):
+        driver["history"][-1]["position"] = position
+
+    leader = ranking[0]["elapsed"]
 
     pos = next(
         i for i, d in enumerate(ranking, 1)
-        if d["name"] == g["player"]
+        if d is player
     )
 
-    rule_ok = not (
-        g["weather"] == "Dry"
-        and len(set(user["used"]) & DRY) < 2
+    game["snapshots"].append([
+        dict(
+            lap=lap,
+            position=i,
+            name=d["name"],
+            team=d["team"],
+            elapsed=round(d["elapsed"], 2),
+            gap=round(d["elapsed"] - leader, 2),
+            tire=d["tire"],
+            stops=d["stops"],
+            lap_time=d["history"][-1]["lap_time"],
+        )
+        for i, d in enumerate(ranking, 1)
+    ])
+
+    game["entries"].append(dict(
+        lap=lap,
+        position=pos,
+        time=player["history"][-1]["lap_time"],
+        gap=round(player["elapsed"] - leader, 2),
+        tire=player["tire"],
+        mode=mode,
+        pit=choice,
+        weather=game["weather"],
+        safety=safety,
+    ))
+
+    game.update(
+        lap=lap,
+        events=events
     )
 
-    avg = (
-        sum(x["user_time"] for x in entries) / len(entries)
-        if entries else 0
-    )
-
-    score = 100
-    warnings = []
-
-    for row in entries:
-        tire = user["history"][row["lap"] - 1]["tire"]
-
-        if row["weather"] == "Wet" and tire in DRY:
-            score -= 8
-            warnings.append("Dry tires on a wet lap")
-
-        if row["weather"] == "Dry" and tire in (
-            "Intermediate", "Wet"
-        ):
-            score -= 8
-            warnings.append("Wet tires on a dry lap")
+    if lap >= game["total"]:
+        game["finished"] = True
 
         if (
-            row["previous_age"] > 18
-            and row["previous_tire"] == "Soft"
-            and row["action"] == "Stay out"
+            not game["was_wet"]
+            and len(set(player["used"]) & DRY) < 2
         ):
-            score -= 3
+            game["events"].append(
+                "⚠️ Dry-race two-compound rule not met."
+            )
 
-    if not rule_ok:
-        score -= 25
-        warnings.append("Dry tire requirement not met")
-
-    if user["stops"] > math.ceil(g["total"] / 5) + 1:
-        score -= 8
-        warnings.append("Excessive pit stops")
-
-    return (
-        max(0, min(100, score)),
-        pos,
-        avg,
-        rule_ok,
-        sorted(set(warnings)),
-    )
+        game["events"].append("🏁 Checkered flag!")
 
 
-def draw_positions(g, full_grid=False):
-    ranking = sorted(
-        g["drivers"], key=lambda d: d["elapsed"]
-    )
+def draw_circuit(game):
+    """Draw an SVG track with simulated car positions."""
+
+    path = TRACKS[game["track"]]["path"]
+    ranking = order(game)
 
     leader = ranking[0]["elapsed"]
-    max_gap = max(
-        max(d["elapsed"] - leader for d in ranking), 5
-    )
+    base = TRACKS[game["track"]]["base"]
 
-    player_index = next(
-        i for i, d in enumerate(ranking)
-        if d["name"] == g["player"]
-    )
+    circles = []
 
-    if full_grid:
-        shown = list(range(len(ranking)))
-    else:
-        shown = sorted(set(
-            list(range(min(8, len(ranking))))
-            + list(range(
-                max(0, player_index - 2),
-                min(len(ranking), player_index + 3)
-            ))
-        ))
-
-    rows = []
-
-    for index in shown:
-        d = ranking[index]
+    # Show the leading 12 cars on the circuit.
+    for index, d in enumerate(ranking[:12]):
         gap = d["elapsed"] - leader
-        pct = max(4, 92 - 80 * gap / max_gap)
+
+        phase = (
+            (game["lap"] * .22 + .74 - gap / base) % 1
+        ) * 100
 
         color = (
-            "#ff6b24" if d["name"] == g["player"]
+            "#ff872d"
+            if d["name"] == game["player"]
             else d["color"]
         )
 
-        gap_label = (
-            f"+{gap:.1f}s" if gap > 0 else "LEADER"
+        radius = (
+            7 if d["name"] == game["player"]
+            else 4.2
         )
 
-        tire_color = COLORS[d["tire"]]
-
-        rows.append(f"""
-        <div class="track-line">
-            <span style="width:35px">P{index + 1}</span>
-            <span style="width:170px;overflow:hidden;
-                white-space:nowrap;text-overflow:ellipsis">
-                {d["name"]}
-            </span>
-            <div class="track-bar">
-                <div class="car"
-                    style="left:{pct-4:.1f}%;
-                    background:{color}">
-                    🏎️
-                </div>
-            </div>
-            <span style="width:82px;text-align:right">
-                {gap_label}
-            </span>
-            <span style="color:{tire_color}">●</span>
-        </div>
+        circles.append(f"""
+        <circle r="{radius}"
+            fill="{color}"
+            stroke="#0c1422"
+            stroke-width="1.8">
+            <animateMotion
+                dur="0.001s"
+                fill="freeze"
+                keyTimes="0;1"
+                keyPoints="{phase/100};{phase/100}"
+                calcMode="linear">
+                <mpath href="#route"/>
+            </animateMotion>
+        </circle>
         """)
 
-    st.markdown(
-        '<div class="track">' + "".join(rows) + "</div>",
-        unsafe_allow_html=True
-    )
+    svg = f"""
+    <div style="
+        background:#131f31;
+        padding:12px;
+        border-radius:15px;
+        border:1px solid #354357">
 
-    if not full_grid and len(shown) < len(ranking):
-        st.caption(
-            "Showing leaders and nearby rivals. "
-            "Toggle full grid to view all 22."
-        )
+        <div style="
+            color:#eef3fc;
+            font-size:17px;
+            font-weight:700">
+            🗺️ {html.escape(game['track'])} — Race Map
+        </div>
 
+        <div style="
+            color:#acb9ca;
+            font-size:12px">
+            Simulated car positions after lap {game['lap']}.
+        </div>
 
-# ---------- MAIN APP ----------
+        <svg viewBox="0 0 380 220"
+            style="
+                width:100%;
+                max-height:320px;
+                background:#0a1421;
+                border-radius:10px">
 
-st.markdown("""
-<div class="head">
-    <div style="font-size:0.8rem;color:#ffa66d;
-        letter-spacing:2px;font-weight:800">
-        SPORTS BY THE NUMBERS • RACE STRATEGY LAB
+            <path
+                id="route"
+                d="{path}"
+                fill="none"
+                stroke="#566479"
+                stroke-width="15"
+                stroke-linecap="round"
+                stroke-linejoin="round"/>
+
+            <path
+                d="{path}"
+                fill="none"
+                stroke="#eff2f6"
+                stroke-width="9"
+                stroke-linecap="round"
+                stroke-linejoin="round"/>
+
+            <path
+                d="{path}"
+                fill="none"
+                stroke="#333b49"
+                stroke-width="2"
+                stroke-dasharray="4 5"/>
+
+            {''.join(circles)}
+
+        </svg>
+
+        <div style="
+            color:#ffa368;
+            font-size:12px;
+            font-weight:700">
+            ● Orange = Your driver
+            · Other colors = Other teams
+            · Top 12 shown
+        </div>
     </div>
-    <h1>🏎️ F1: THE PIT WALL</h1>
-    <div>Make the call. Read the data. Beat the field.</div>
-</div>
-""", unsafe_allow_html=True)
+    """
 
-if "game" not in st.session_state:
-    st.session_state.game = None
+    if hasattr(st, "html"):
+        st.html(svg)
+    else:
+        st.components.v1.html(svg, height=350)
 
-if st.session_state.game is None:
-    st.subheader("Set up your Grand Prix")
 
-    a, b, c = st.columns([2, 1, 1])
+def leaderboard(game):
+    rows = []
+    ranked = order(game)
+    lead = ranked[0]["elapsed"]
+
+    for p, d in enumerate(ranked, 1):
+        rows.append(dict(
+            Pos=p,
+            Driver=(
+                "★ " if d["name"] == game["player"]
+                else ""
+            ) + d["name"],
+            Team=d["team"],
+            Gap=(
+                "LEADER" if p == 1
+                else f"+{d['elapsed']-lead:.1f}s"
+            ),
+            Tire=(
+                f"{TIRE_ICON[d['tire']]} {d['tire']}"
+            ),
+            Age=round(d["age"], 1),
+            Stops=d["stops"],
+        ))
+
+    return pd.DataFrame(rows)
+
+
+# =====================================================
+# MAIN STREAMLIT APP
+# =====================================================
+
+st.title("🏎️ F1: THE PIT WALL")
+
+st.caption(
+    "SPORTS BY THE NUMBERS · "
+    "Real 2026 driver names · "
+    "Fictional classroom race data"
+)
+
+if "f1_game" not in st.session_state:
+    st.session_state.f1_game = None
+
+
+# -----------------------------------------------------
+# RACE SETUP
+# -----------------------------------------------------
+
+if st.session_state.f1_game is None:
+    st.subheader("Set up your race")
+
+    a, b, c = st.columns(3)
 
     with a:
-        circuit = st.selectbox(
-            "Circuit", list(TRACKS)
-        )
-    with b:
-        laps = st.slider(
-            "Race length (laps)", 8, 30, 14, 2
-        )
-    with c:
-        first = st.selectbox(
-            "Starting tire", ["Medium", "Soft", "Hard"]
+        track = st.selectbox(
+            "Circuit",
+            list(TRACKS)
         )
 
-    chosen = st.selectbox(
-        "Choose your 2026 F1 driver",
-        DRIVERS,
-        format_func=lambda name: (
-            f"{name} — {TEAM_BY_DRIVER[name]}"
+    with b:
+        laps = st.slider(
+            "Race laps",
+            8, 30, 14
+        )
+
+    with c:
+        first = st.selectbox(
+            "Starting tire",
+            ["Medium", "Soft", "Hard"]
+        )
+
+    driver = st.selectbox(
+        "Your driver",
+        [x[0] for x in GRID],
+        format_func=lambda n: (
+            f"{n} — {TEAMS[n]}"
         )
     )
 
     st.info(
-        "This is a classroom simulation using real driver "
-        "names but fictional performance statistics."
+        "The circuit outlines are simplified tracings "
+        "inspired by your uploaded reference. "
+        "This is a simulated strategy exercise, "
+        "not live F1 GPS or timing."
     )
 
     if st.button(
-        "🏁 START GRAND PRIX",
+        "🏁 START RACE",
         type="primary",
         use_container_width=True
     ):
-        st.session_state.game = make_game(
-            circuit,
-            laps,
-            random.SystemRandom().randrange(10**9),
-            first,
-            chosen
+        st.session_state.f1_game = create_game(
+            track, laps, driver, first
         )
         st.rerun()
 
     st.stop()
 
 
-g = st.session_state.game
-user = g["drivers"][0]
+# -----------------------------------------------------
+# LIVE RACE SCREEN
+# -----------------------------------------------------
 
-ranking = sorted(
-    g["drivers"], key=lambda d: d["elapsed"]
-)
+g = st.session_state.f1_game
 
-position = next(
-    i for i, d in enumerate(ranking, 1)
+player = next(
+    d for d in g["drivers"]
     if d["name"] == g["player"]
 )
 
-header = st.columns(5)
+pos = next(
+    i for i, d in enumerate(order(g), 1)
+    if d is player
+)
 
-values = [
-    f"{g['lap']} / {g['total']}",
-    f"P{position} / 22",
-    g["weather"],
-    f"{user['tire']} · {user['age']:.0f} laps",
-    user["stops"],
-]
+a, b, c, d, e = st.columns(5)
 
 labels = [
-    "LAP", "POSITION", "WEATHER",
-    "YOUR TIRES", "PIT STOPS"
+    "LAP",
+    "POSITION",
+    "WEATHER",
+    "CURRENT TIRE",
+    "PIT STOPS",
 ]
 
-for col, label, value in zip(header, labels, values):
-    with col:
-        st.metric(label, value)
+values = [
+    f"{g['lap']}/{g['total']}",
+    f"P{pos}/22",
+    g["weather"],
+    f"{TIRE_ICON[player['tire']]} {player['tire']}",
+    str(player["stops"]),
+]
+
+for col, label, val in zip(
+    [a, b, c, d, e],
+    labels,
+    values
+):
+    col.metric(label, val)
 
 
-left, right = st.columns([1.55, 1], gap="medium")
+left, right = st.columns(
+    [1.35, 1],
+    gap="large"
+)
+
+
+# -----------------------------------------------------
+# CIRCUIT MAP AND LIVE LEADERBOARD
+# -----------------------------------------------------
 
 with left:
-    st.markdown("### 🏁 Live Race Tracker")
+    draw_circuit(g)
 
-    full_grid = st.toggle(
-        "Show all 22 drivers", value=False
+    st.subheader("📡 Live Timing Board")
+
+    st.dataframe(
+        leaderboard(g),
+        hide_index=True,
+        use_container_width=True,
+        height=400
     )
 
-    draw_positions(g, full_grid)
-
     if g["entries"]:
-        last = g["entries"][-1]
-
-        st.caption(
-            f"Last lap: {last['user_time']:.2f}s | "
-            f"Mode: {last['mode']} | "
-            f"Position: P{last['position']}"
+        st.subheader(
+            "📈 Your Lap Times and Race Position"
         )
 
-    st.markdown("### 📊 Timing & Tire History")
+        data = pd.DataFrame(g["entries"])
 
-    if g["entries"]:
-        df = pd.DataFrame(g["entries"])
+        if len(data) > 1:
+            st.line_chart(
+                data.set_index("lap")["time"]
+            )
 
-        chart_df = df.set_index("lap")[["user_time"]]
-
-        # FIX: Wait until 2 laps for time-series charts.
-        if len(chart_df) > 1:
-            st.line_chart(chart_df, height=168)
+            st.line_chart(
+                data.set_index("lap")["position"]
+            )
         else:
             st.info(
-                f"Lap 1: {chart_df.iloc[0, 0]:.2f}s. "
-                "The chart appears after lap 2."
+                "Complete lap 2 to unlock history charts."
             )
-
-        st.markdown("### 📉 Position Changes")
-
-        selected = st.multiselect(
-            "Drivers on position chart",
-            DRIVERS,
-            default=[g["player"]] + [
-                d["name"] for d in ranking
-                if d["name"] != g["player"]
-            ][:4]
-        )
-
-        pos_rows = [
-            {
-                "Lap": h["lap"],
-                "Driver": d["name"],
-                "Position": h["position"]
-            }
-            for d in g["drivers"]
-            for h in d["history"]
-            if d["name"] in selected
-        ]
-
-        if pos_rows:
-            chart = (
-                pd.DataFrame(pos_rows)
-                .pivot(
-                    index="Lap",
-                    columns="Driver",
-                    values="Position"
-                )
-                .sort_index()
-            )
-
-            if len(chart) > 1:
-                st.line_chart(chart, height=225)
-            else:
-                st.caption(
-                    "Position chart appears after lap 2."
-                )
 
         with st.expander(
-            "⏪ Lap Replay — All 22 Drivers",
-            expanded=False
+            "⏪ Replay any completed lap"
         ):
-            # IMPORTANT FIRST-LAP FIX
-            # Never create a slider with identical endpoints.
             if g["lap"] == 1:
-                replay_lap = 1
+                selected = 1
                 st.caption(
-                    "Lap 1 complete. Run another lap "
-                    "to unlock the replay slider."
+                    "Lap 1 complete. Replay slider "
+                    "unlocks after lap 2."
                 )
             else:
-                replay_lap = st.slider(
-                    "Replay completed lap",
-                    min_value=1,
-                    max_value=g["lap"],
-                    value=g["lap"],
-                    key=f"replay_lap_{g['lap']}"
+                selected = st.slider(
+                    "Lap number",
+                    1,
+                    g["lap"],
+                    g["lap"]
                 )
-
-            latest = pd.DataFrame(
-                g["snapshots"][replay_lap - 1]
-            ).sort_values("position")
-
-            leader_time = float(
-                latest["elapsed"].min()
-            )
-
-            latest["gap_to_leader"] = (
-                latest["elapsed"].apply(
-                    lambda t: (
-                        f"+{t-leader_time:.1f}s"
-                        if t > leader_time
-                        else "LEADER"
-                    )
-                )
-            )
 
             st.dataframe(
-                latest[[
-                    "position", "driver", "team",
-                    "lap_time", "gap_to_leader",
-                    "tire", "stops"
-                ]],
+                pd.DataFrame(
+                    g["snapshots"][selected - 1]
+                ),
                 hide_index=True,
                 use_container_width=True
             )
 
-            full_timing = pd.DataFrame([
-                row
-                for lap in g["snapshots"]
-                for row in lap
-            ])
+        full_history = pd.DataFrame([
+            row
+            for snapshot in g["snapshots"]
+            for row in snapshot
+        ])
 
-            st.download_button(
-                "Download Full Timing CSV",
-                full_timing.to_csv(index=False),
-                file_name="f1_full_timing.csv",
-                mime="text/csv"
-            )
-
-        with st.expander("Your Lap-by-Lap Decisions"):
-            st.dataframe(
-                df[[
-                    "lap", "user_time", "position",
-                    "weather", "safety",
-                    "action", "mode", "gap"
-                ]],
-                use_container_width=True,
-                hide_index=True
-            )
-
-    else:
-        st.caption(
-            "Complete lap 1 to see live timing and positions."
+        st.download_button(
+            "Download full 22-driver timing (CSV)",
+            full_history.to_csv(index=False),
+            "f1_timing.csv",
+            "text/csv"
         )
 
+
+# -----------------------------------------------------
+# PIT WALL CONTROLS
+# -----------------------------------------------------
 
 with right:
-    st.markdown("### 🎧 Your Pit Wall")
+    st.subheader("🎧 Your Pit Wall")
 
     if not g["finished"]:
-        remaining = g["total"] - g["lap"]
-
-        st.caption(
-            f"{remaining} laps remaining | "
-            f"Typical pit loss: "
-            f"{TRACKS[g['track']]['pit']} seconds"
+        st.write(
+            f"**Next lap: {g['lap'] + 1}** "
+            f"of {g['total']}"
         )
 
-        if g["weather"] == "Wet":
-            st.warning(
-                "Wet conditions! Consider wet tires."
-            )
-        elif g["weather"] == "Damp":
-            st.info(
-                "Damp conditions! Intermediates may help."
-            )
-        elif user["tire"] in ("Wet", "Intermediate"):
-            st.warning(
-                "Track is dry. Your wet tires are slower."
-            )
+        st.caption(
+            "Normal pit-stop time loss: approximately "
+            f"{TRACKS[g['track']]['pit']:.0f}s"
+        )
 
         pit = st.selectbox(
-            "Tire decision for next lap",
+            "Tire strategy",
             [
-                "Stay out", "Soft", "Medium", "Hard",
-                "Intermediate", "Wet"
+                "Stay out",
+                "Soft",
+                "Medium",
+                "Hard",
+                "Intermediate",
+                "Wet",
             ],
             key=f"pit_{g['lap']}"
         )
 
         mode = st.selectbox(
-            "Driving style",
-            ["Conserve", "Balanced", "Push"],
-            index=1,
+            "Driving mode",
+            [
+                "Balanced",
+                "Push",
+                "Conserve",
+            ],
             key=f"mode_{g['lap']}"
         )
 
-        st.caption(
-            "Push = faster but more tire wear. "
-            "Conserve = slower but saves tires."
-        )
-
-        # Button runs ONE lap and refreshes safely.
-        if st.button(
-            "▶️ RUN NEXT LAP",
-            type="primary",
-            use_container_width=True,
-            key=f"run_lap_{g['lap']}"
+        if (
+            g["weather"] == "Wet"
+            and player["tire"] in DRY
         ):
-            simulate(g, pit, mode)
-            st.session_state.game = g
-            st.rerun()
-
-        need_two = (
-            len(set(user["used"]) & DRY) < 2
-        )
-
-        if g["weather"] == "Dry" and need_two:
             st.warning(
-                "Dry race rule: use at least two "
-                "different dry tire compounds."
+                "Heavy rain: dry tires will be much slower."
             )
 
+        if (
+            g["weather"] == "Dry"
+            and player["tire"] not in DRY
+        ):
+            st.warning(
+                "Dry track: consider a dry tire compound."
+            )
+
+        if (
+            not g["was_wet"]
+            and len(set(player["used"]) & DRY) < 2
+        ):
+            st.info(
+                "Dry-race challenge: use two different "
+                "dry tire compounds by the finish."
+            )
+
+        if st.button(
+            "▶ RUN NEXT LAP",
+            type="primary",
+            use_container_width=True
+        ):
+            run_lap(g, pit, mode)
+            st.rerun()
+
+    # -------------------------------------------------
+    # FINISH LINE AND REPORT CARD
+    # -------------------------------------------------
+
     else:
-        score, pos, avg, rule_ok, warnings = report(g)
+        valid = (
+            g["was_wet"]
+            or len(set(player["used"]) & DRY) >= 2
+        )
+
+        score = max(
+            0,
+            100
+            - (0 if valid else 25)
+            - max(0, player["stops"] - 3) * 5
+        )
 
         st.success(
             f"🏁 Finished P{pos}! "
-            f"Strategy Grade: {score}/100"
-        )
-
-        st.metric(
-            "Average Lap Time",
-            f"{avg:.2f}s"
+            f"Strategy score: {score}/100"
         )
 
         st.caption(
-            "Strategy grade evaluates decisions, "
-            "not just finishing position."
+            "Illustrative score based on tire-rule "
+            "completion and pit-stop economy."
         )
 
         st.write(
-            "Dry tire rule: "
-            + ("✅ Met" if rule_ok else "❌ Not met")
+            "Dry tire requirement:",
+            "✅ Met or wet conditions"
+            if valid else "❌ Not met"
         )
-
-        for warning in warnings:
-            st.warning(warning)
 
         reflection = st.text_area(
-            "What strategy would you change and why?",
-            key="reflection"
+            "What would you change next time?"
         )
 
-        text_report = (
-            f"F1: THE PIT WALL\n"
-            f"Track: {g['track']}\n"
+        summary = (
             f"Driver: {g['player']}\n"
-            f"Finishing Position: P{pos}\n"
-            f"Strategy Score: {score}/100\n"
-            f"Average Lap: {avg:.2f}s\n"
-            f"Pit Stops: {user['stops']}\n"
-            f"Tires Used: {', '.join(user['used'])}\n"
+            f"Track: {g['track']}\n"
+            f"Position: P{pos}\n"
+            f"Strategy score: {score}\n"
             f"Reflection: {reflection}\n"
         )
 
         st.download_button(
-            "📄 Download Coach Report",
-            text_report,
-            file_name="f1_coach_report.txt",
-            mime="text/plain",
-            use_container_width=True
+            "Download coach report",
+            summary,
+            "pit_wall_report.txt",
+            "text/plain"
         )
 
-        st.download_button(
-            "📊 Download Race Data",
-            pd.DataFrame(g["entries"]).to_csv(
-                index=False
-            ),
-            file_name="f1_lap_data.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+    # -------------------------------------------------
+    # RACE CONTROL EVENTS
+    # -------------------------------------------------
 
     if g["events"]:
-        st.markdown("### 📻 Race Control")
+        st.subheader("📻 Race Control")
 
-        for event in g["events"][-3:]:
+        for event in g["events"]:
             st.write(event)
 
-    with st.expander("🔎 Tire Guide & Math Help"):
-        st.markdown("""
-**Soft:** Fast when fresh, wears quickly.
+    # -------------------------------------------------
+    # MATH CONNECTION
+    # -------------------------------------------------
 
-**Medium:** Balanced speed and durability.
+    with st.expander(
+        "Tire guide and math connection"
+    ):
+        st.write(
+            "🔴 Soft: fast but wears quickly."
+        )
 
-**Hard:** Slower but lasts longer.
+        st.write(
+            "🟡 Medium: balanced speed and durability."
+        )
 
-**Intermediate:** Best suited to damp conditions.
+        st.write(
+            "⚪ Hard: slower but durable."
+        )
 
-**Wet:** Designed for heavy rain.
+        st.write(
+            "🟢 Intermediate: damp conditions."
+        )
 
-**Average lap time** = Total lap seconds ÷ laps.
+        st.write(
+            "🔵 Wet: heavy rain."
+        )
 
-**Gap to leader** = Your total elapsed time −
-leader's elapsed time.
+        st.write(
+            "**Time gap** = Your accumulated race time "
+            "− the leader's accumulated race time."
+        )
 
-**Example:** Saving 0.7 seconds per lap for 8 laps
-saves 5.6 seconds. Is that worth a 21-second pit stop?
-""")
+        st.write(
+            "**Average lap time** = Sum of lap times "
+            "÷ number of laps."
+        )
 
     if st.button(
-        "🔄 New Race",
+        "🔄 Start a new race",
         use_container_width=True
     ):
-        st.session_state.game = None
+        st.session_state.f1_game = None
         st.rerun()
 
 
 st.divider()
 
 st.caption(
-    "Sports by the Numbers • Educational F1 simulator • "
-    "Real 2026 driver/team names • Simulated racing data • "
-    "Simplified tire and race rules."
+    "Educational simulation: fictional lap times, "
+    "simplified race rules, and approximate circuit art. "
+    "Not an official Formula 1 timing feed."
 )
